@@ -218,3 +218,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 密钥
+.env
+
+# 数据库
+data/*.db
+data/*.db-journal
+
+# 编辑器
+.idea/
+.vscode/
+
+# 系统
+.DS_Store
+Thumbs.db
