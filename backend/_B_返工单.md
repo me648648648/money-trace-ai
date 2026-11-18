@@ -86,9 +86,9 @@ parse_question(text, today=None) -> dict
 }
 ```
 
-**`understood` 的语义（建议口径，等组长确认）：**
-`True` = 这句话里确实认到了；`False` = 用了默认值（默认今天、默认支出、默认 sum、没认出类别）。前端拿它把「猜的字段」标黄让用户改。
-契约 v2 第一节写「四个布尔值」，但同一节的示例是 5 个键（day/amount/type/category/merchant）。**按示例的 5 个键实现**，这是契约正文的笔误，组长会统一。
+**`understood` 的语义（2026-11-18 已写进契约，照做）：**
+`True` = 这句话里确实认到了；`False` = 用了默认值（默认今天、默认支出、默认 sum、没认出类别或商家）。前端拿它把「猜的字段」标黄让用户改。
+`parse_text` 固定 5 个键：day / amount / type / category / merchant，一个都不能少。`parse_question` 固定 5 个键：from / to / category / type / metric。
 
 ---
 
@@ -164,7 +164,7 @@ for cat, keywords in CATEGORIES.items():
 | 今天 | 2026-11-17 | 2026-11-17 | |
 | 都认不出来 | 2026-11-01 | 2026-11-30 | 默认本月整月 |
 
-「上周」的端点契约没写死，上面是建议口径（自然周）。组长确认后按这个来；不确定就先用它，并在 PR 描述里写明。
+「上周」的端点契约没写死，组内统一按自然周执行（2026-11-18 口头约定）。实现时按上面的端点来，并在 PR 描述里写明。
 
 ---
 
@@ -270,10 +270,14 @@ print("case 1 ok", r)
 
 ---
 
-## 附：需要组长先拍板的 3 个点
+## 附：口径状态（2026-11-18）
 
-这 3 个点契约没写死，B 实现前最好在群里确认，避免返工：
+已经写进 `contract.py`，不用再问：
 
-1. `understood` 到底是 5 个键还是 4 个（本单按 5 个实现）；`True` 表示「认到了」还是「是猜的」（本单按「认到了」）。
-2. `parse_question` 的 `understood` 子键形状（本单按 from/to/category/type/metric 五个布尔）。
-3. 「本周 / 上周」按自然周还是滚动 7 天（本单按自然周）。
+- `understood` 固定 5 个键；`true` = 认到了。
+- `parse_text` 的键：day / amount / type / category / merchant。
+- `parse_question` 的键：from / to / category / type / metric，值是布尔。
+
+契约没写死、但仍按本单执行的一条：
+
+- 「本周 / 上周」按自然周。组内如有异议，在 PR 里提出，不要自己改。

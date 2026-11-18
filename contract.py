@@ -106,7 +106,10 @@ set_budget(month, amount) -> None
          "category": "交通", "merchant": "", "note": "昨天打车 23 块",
          "understood": {"day": true, "amount": true, "type": true,
                         "category": true, "merchant": false}}
-   understood 的四个布尔值告诉前端「哪个字段是我猜的」。
+   understood 固定五个布尔键：day / amount / type / category / merchant。
+   true = 这句话里确实认到了该字段；false = 用了默认值（默认今天、默认
+   expense、没认出类别或商家），前端把 false 的字段标黄让用户补。
+   五个键一个都不能少返回。
    amount 认不出来时返回 null 配 "amount": false，前端据此标红让用户补，
    而不是显示「花费 0 元」。
 
@@ -160,6 +163,8 @@ set_budget(month, amount) -> None
    前端要能显示理解结果——用户问「上个月打车」，解析成「本月」时他能看出来。
    只有一段 answer 字符串的话，错了也看不出错在哪。
    metric 只有 'sum' / 'count' / 'ranking' 三个值。
+   注意：这里的 understood 是「解析出来的实际值」，给前端显示系统理解用；
+   parser.parse_question 返回的 understood 是布尔置信标记。同名不同用。
 
 9. GET /api/budget?month=2026-11 —— 预算页
    返回 {"month": ..., "items": [
@@ -209,10 +214,16 @@ parse_text(text, today=None) -> dict
     {day, amount, type, category, merchant, note, understood}
     amount 是整数分；认不出来用 None，不要用 0 冒充
     category 是 CATEGORIES 的键，或 "其他"
+    understood 五个布尔键：day / amount / type / category / merchant，
+    true = 认到了，false = 用了默认值。与 HTTP 第 1 条完全一致。
 
 parse_question(text, today=None) -> dict
     {from, to, category, type, metric, understood}
     category 为 None 表示不限类别；metric 是 'sum' / 'count' / 'ranking'
+    understood 五个布尔键：from / to / category / type / metric，
+    true = 这句话里显式认到了，false = 用了默认值（默认本月、默认 expense、
+    默认 sum）。注意它和 HTTP 第 8 条响应里的 understood 同名不同用：
+    那个是解析出来的实际值，这个是置信标记。
 
 db.py（C 负责，全项目唯一写 SQL 的地方）
 ----------------------------------------
