@@ -181,6 +181,8 @@ for cat, keywords in CATEGORIES.items():
 
 一句话里同时有「三十块」和「2026」时，先抠日期（根因 1），再按单位找金额。
 
+中文数字部分可以用 `cn2an`（见第 11 节），但它只替掉「中文数字 → 整数」这一步，单位和日期规则不变。
+
 ---
 
 ## 6. 收支和商家（B 自己定，PR 里写清楚）
@@ -266,6 +268,8 @@ print("case 1 ok", r)
 - [ ] `import backend.parser` 没有任何副作用（不建库、不读文件）。
 - [ ] 只改了 `backend/parser.py` 一个文件。
 - [ ] PR 描述里列出：新增的类别关键词、收入关键词、商家词表、任何你自己定的口径（如「上周」端点）。
+- [ ] `parser.py` 顶部对 `cn2an` 做了 `try/except ImportError` 兜底，没装包时退回手写 `cn_to_int`；不允许光秃秃一行 `import cn2an`。
+- [ ] PR 描述写明「新增依赖 cn2an>=0.5.24，requirements.txt 由组长维护（已加）」。
 - [ ] PR 由组长 review 后合并，自己不合自己的 PR。
 
 ---
@@ -281,3 +285,65 @@ print("case 1 ok", r)
 契约没写死、但仍按本单执行的一条：
 
 - 「本周 / 上周」按自然周。组内如有异议，在 PR 里提出，不要自己改。
+
+---
+
+## 11. 组长补充：允许使用 cn2an（2026-11-18 更新）
+
+**结论：这轮允许在 `parser.py` 里用 `cn2an`，但只限 `cn_to_int` 一个函数，并且必须做缺包兜底。**
+
+先澄清一条：返工单原文本**没有**禁止第三方库，只禁止了 `parser.py` 里 `import db` / `import main`（会循环导入），以及 `import backend.parser` 不许有副作用。之前口头说「先不加」是建议，现在按组长决定改成「允许，但有约束」。
+
+### 11.1 它能做什么、不能做什么（沙箱实测 0.5.24）
+
+| 输入 | `cn2an.cn2an(x, "smart")` | 说明 |
+| --- | --- | --- |
+| 一百五十 | 150 | |
+| 二十 | 20 | |
+| 两 | 2 | strict 模式会报错，必须 smart |
+| 一万二 | 12000 | 口语写法也能转 |
+| 三十块 | ValueError | 「块」不在单位表里 |
+| 二十元 | 20 | 「元」能识别 |
+| 一 | 1 | **量词也会被转**，所以单位规则不能删 |
+| 150 | 150.0（float） | 纯阿拉伯数字别喂给它 |
+
+它只解决「中文数字 → 整数」，不解决这轮四个根因里的另外三个：日期被当金额、类别打分、「上个月」自然月。
+
+### 11.2 写法（顶部兜底 + 只在 cn_to_int 内用）
+
+```python
+try:
+    import cn2an          # 可选依赖：装了就用，没装也不能让服务起不来
+except ImportError:
+    cn2an = None
+
+def cn_to_int(text):
+    """中文数字转整数。转不了返回 None。"""
+    if not text:
+        return None
+    if cn2an is not None:
+        try:
+            return int(cn2an.cn2an(text, "smart"))
+        except Exception:   # 「块」这类单位会抛 ValueError，交给手写逻辑
+            pass
+    return _cn_to_int_manual(text)
+```
+
+要点：
+
+- 不要写光秃秃的 `import cn2an`。模块一被 import 就执行，别人环境没装 → `ModuleNotFoundError` → `main.py` 导入失败 → uvicorn 起不来，页面和 11 条接口全挂。
+- `except ImportError` 只接「没装」，不要用 `except:` 吞掉别的错误。
+- 调用处再包一层 `try/except`，因为 cn2an 对带单位的字符串会抛 `ValueError`。
+- 手写的 `_cn_to_int_manual` 要留着，作为没装包时的退路，也是自测覆盖的对象。
+
+### 11.3 使用约束
+
+1. 只把**纯中文数字片段**喂给它。先用 `([一二两三四五六七八九十百千万零〇]+)\s*(块|元|钱)` 把数字和单位切开，数字部分再转。
+2. 用 `smart` 模式，不要 `strict`。
+3. 「一」「两」这类量词照旧不算钱：**后面必须跟单位**才当金额。这条在调用 cn2an 之前判断，不能省。
+4. 日期不要用 `cn2an.transform` 去猜，按第 4 节的显式规则和对照表。
+5. `requirements.txt` 由组长改（已加 `cn2an>=0.5.24`），B 不要动；PR 描述里写一句「依赖 cn2an，已在 requirements.txt」。
+
+### 11.4 验收不变
+
+第 7 节 14 条用例一条都不能少，`understood` 的语义也不变。第 10 节新增两条完成标准（兜底、PR 写依赖）。
