@@ -197,7 +197,7 @@ for cat, keywords in CATEGORIES.items():
 
 ## 7. 验收用例（today = 2026-11-17）
 
-前 8 条是交接文档里实测出来的 bug，必须全过；后 7 条是补充的边界（第 15 条是 2026-11-18 晚加的「大前天」，见第 12.4 节）。
+前 8 条是交接文档里实测出来的 bug，必须全过；后 8 条是补充的边界（第 15 条「大前天」见第 12.4 节，第 16 条收入用例见第 12.7 节）。
 
 | # | 输入 | 期望 |
 | --- | --- | --- |
@@ -210,12 +210,13 @@ for cat, keywords in CATEGORIES.items():
 | 7 | `最近30天消费多少` | from=2026-10-19，to=2026-11-17，category=None |
 | 8 | `哪个分类花得最多` | from=2026-11-01，to=2026-11-30，metric=ranking |
 | 9 | `二十块买菜` | amount=2000 |
-| 10 | `昨天打车 23 块` | day=2026-11-16，amount=2300，category=交通，understood.day/amount/type/category 都是 True，merchant=False |
+| 10 | `昨天打车 23 块` | day=2026-11-16，amount=2300，category=交通，understood.day/amount/category 都是 True，**understood.type=False**（这句没说收入还是支出，`type` 是默认值，见第 2 节定义），merchant=False |
 | 11 | `前天麦当劳 35.5` | day=2026-11-15，amount=3550，category=餐饮，merchant=麦当劳，understood.merchant=True |
 | 12 | `今天公交 2` | day=2026-11-17，amount=200 |
 | 13 | `本周吃饭花了多少` | from=2026-11-16，to=2026-11-17，category=餐饮，metric=sum |
 | 14 | `上周打车多少笔` | from=2026-11-09，to=2026-11-15，category=交通，metric=count |
 | 15 | `大前天 打车 20` | day=2026-11-14，amount=2000，category=交通（见第 12.4 节：「大前天」必须排在「前天」之前判断） |
+| 16 | `工资到账 8000` | type=income，category=收入，amount=800000，understood.type=True（这条专门防「把 type 写死成 expense」，见第 12.7 节） |
 
 补充判断规则：
 
@@ -246,7 +247,7 @@ assert r["category"] == "交通", r
 print("case 1 ok", r)
 ```
 
-把第 7 节 15 条逐条写成 `assert`，全绿再提 PR。哪条红就把那行输入和实际返回贴到群里，别自己猜。
+把第 7 节 16 条逐条写成 `assert`，全绿再提 PR。哪条红就把那行输入和实际返回贴到群里，别自己猜。
 
 ---
 
@@ -265,7 +266,7 @@ print("case 1 ok", r)
 
 ## 10. 完成标准（Definition of Done）
 
-- [ ] 第 7 节 15 条用例全过（贴运行输出到 PR）。
+- [ ] 第 7 节 16 条用例全过（贴运行输出到 PR）。
 - [ ] `import backend.parser` 没有任何副作用（不建库、不读文件）。
 - [ ] 只改了 `backend/parser.py` 一个文件。
 - [ ] PR 描述里列出：新增的类别关键词、收入关键词、商家词表、任何你自己定的口径（如「上周」端点）。
@@ -347,7 +348,7 @@ def cn_to_int(text):
 
 ### 11.4 验收不变
 
-第 7 节 15 条用例一条都不能少，`understood` 的语义也不变。第 10 节新增两条完成标准（兜底、PR 写依赖）。
+第 7 节 16 条用例一条都不能少，`understood` 的语义也不变。第 10 节新增两条完成标准（兜底、PR 写依赖）。
 
 ---
 
@@ -405,4 +406,28 @@ def cn_to_int(text):
 ### 12.6 PR 里必须贴出完整关键词表
 
 第 10 节原有的「列出新增的关键词」升级为硬要求：**PR 描述里贴出完整 `CATEGORIES`（7 个支出类别的全部关键词），不是只列新增的。** 组长按 12.1、12.3 逐条核对。这条也算第 10 节的完成标准之一。
+
+### 12.7 必须有一条收入用例（第 16 条）
+
+原来的 15 条用例里**一条收入句子都没有**，这意味着把 `type` 写死成 `"expense"` 也能全绿——收入功能一天没写，验收照样通过。所以补第 16 条：
+
+```
+「工资到账 8000」-> type=income，category=收入，amount=800000，understood.type=True
+```
+
+配套口径：
+
+- 句子出现「工资 / 薪水 / 生活费 / 红包 / 兼职 / 报销 / 退款 / 奖金 / 利息 / 到账」等词 → `type=income`，`category` 固定 `"收入"`，`understood.type=True`。
+- 没有收入词 → `type=expense`，**`understood.type=False`**（默认值必须标出来，见第 2 节）。
+- 第 10 条和第 16 条是一对：第 10 条证「没有收入词时如实标 False」，第 16 条证「有收入词时真的能认出来」。两条都过，才能说明 `type` 不是硬编码的。
+
+### 12.8 `understood` 的 True 只表示「认到了」，不表示「结果对」
+
+这条是 2026-11-18 晚发现的笔误，写下来防止再犯：
+
+- `understood.xxx = True`：这句话里**确实有这个信息**，是我识别出来的。
+- `understood.xxx = False`：句子里没有，我用了默认值。
+
+「结果看起来对」不等于「认到了」。例：「昨天打车 23 块」是支出的概率很高，但句子里没有表达收支的词，`type` 就是默认值，必须标 `False`。前端靠这个标记决定哪一格标黄让用户确认。
+
 
