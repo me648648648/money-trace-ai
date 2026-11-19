@@ -270,8 +270,8 @@ print("case 1 ok", r)
 - [ ] `import backend.parser` 没有任何副作用（不建库、不读文件）。
 - [ ] 只改了 `backend/parser.py` 一个文件。
 - [ ] PR 描述里列出：新增的类别关键词、收入关键词、商家词表、任何你自己定的口径（如「上周」端点）。
-- [ ] `parser.py` 顶部对 `cn2an` 做了 `try/except ImportError` 兜底，没装包时退回手写 `cn_to_int`；不允许光秃秃一行 `import cn2an`。
-- [ ] PR 描述写明「新增依赖 cn2an>=0.5.24，requirements.txt 由组长维护（已加）」。
+- [ ] 代码里 import 的第三方包（cn2an / jieba / dateparser）都已在 `requirements.txt` 里声明，且本地 `pip install -r requirements.txt` 能装成功；**不再要求 `try/except ImportError` 兜底**（见 11.5）。
+- [ ] PR 描述写明用了哪些依赖及版本（cn2an>=0.5.24、jieba>=0.42.1、dateparser>=1.5.1，均已在 requirements.txt，组长维护）；只写实际用到的。
 - [ ] PR 由组长 review 后合并，自己不合自己的 PR。
 
 ---
@@ -292,7 +292,7 @@ print("case 1 ok", r)
 
 ## 11. 组长补充：允许使用 cn2an（2026-11-18 更新）
 
-**结论：这轮允许在 `parser.py` 里用 `cn2an`，但只限 `cn_to_int` 一个函数，并且必须做缺包兜底。**
+**结论：这轮允许在 `parser.py` 里用 `cn2an`，但只限 `cn_to_int` 一个函数。**（原「必须做缺包兜底」的要求已于 2026-11-19 取消，见 11.5。）
 
 先澄清一条：返工单原文本**没有**禁止第三方库，只禁止了 `parser.py` 里 `import db` / `import main`（会循环导入），以及 `import backend.parser` 不许有副作用。之前口头说「先不加」是建议，现在按组长决定改成「允许，但有约束」。
 
@@ -312,6 +312,8 @@ print("case 1 ok", r)
 它只解决「中文数字 → 整数」，不解决这轮四个根因里的另外三个：日期被当金额、类别打分、「上个月」自然月。
 
 ### 11.2 写法（顶部兜底 + 只在 cn_to_int 内用）
+
+> 下面的兜底写法已被 11.5 取消，保留仅作说明；现在直接 `import cn2an` 即可。
 
 ```python
 try:
@@ -348,7 +350,16 @@ def cn_to_int(text):
 
 ### 11.4 验收不变
 
-第 7 节 16 条用例一条都不能少，`understood` 的语义也不变。第 10 节新增两条完成标准（兜底、PR 写依赖）。
+第 7 节 16 条用例一条都不能少，`understood` 的语义也不变。第 10 节的依赖勾选项按 11.5 执行。
+
+### 11.5 组长补充：放开 jieba / dateparser（2026-11-19）
+
+**结论：这轮允许 `parser.py` 使用 `jieba` 和 `dateparser`，前提是它们已经写进 `requirements.txt`（已加 `jieba>=0.42.1`、`dateparser>=1.5.1`，由组长维护）。**
+
+- **11.2 里的 `try/except ImportError` 兜底要求取消。** 依赖已经声明在 requirements 里，写普通 `import jieba` 即可；第 10 节里原来「必须兜底」的勾选项以本节为准。
+- `cn2an` 同样按「已声明依赖」处理，不再要求兜底；但 11.3 的使用约束（smart 模式、先剥单位、日期别用它猜）继续有效。
+- 再想引入这两个之外的库：**先报备组长、先改 `requirements.txt`**。PR 里有 `import` 却没有对应 requirements 行，一律打回。
+- `requirements.txt` 仍由组长维护，B 不要改；拉完最新 main 后记得重装一次依赖。
 
 ---
 
