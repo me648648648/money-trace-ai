@@ -290,3 +290,29 @@ connect-src 'none'   →   connect-src 'self'
 ### 9.4 顺带说明，不在本轮范围
 
 `frontend/finora-ai/README.md` 和 `SECURITY.md` 还写着「账本保存在 localStorage」。本轮不动这两个文件，但 PR 描述里要提一句，等主链路合并后由组长统一改，避免以后有人照旧文档排查。
+
+---
+
+## 10. 组长复核（2026-11-23，对应 PR #11）
+
+> 本节与第 1～9 节同等效力，冲突时以本节为准。复核方式：读 PR #11 的完整 diff + 下载分支文件静态检查，**没有做浏览器联调**（原因见 10.2）。
+
+### 10.1 已通过（不用再改）
+
+- 只改了 `index.html` 和 `assets/js/app.js`，`node --check` 语法通过；CSS、图片、`Finora-AI-Preview.html` 未动。
+- CSP 已改成 `connect-src 'self'`，`script-src 'self'` 未动；顶部「示例账本」角标已删。
+- 全文搜索 `localStorage`、`sessionStorage`、`demos`、`loadLedger`、`persist`、`baseMonth`、`anchorDate`、`textDraft`、`queryLedger`、`newTransactionId`，均 0 处。
+- 适配层 `fromApi` / `toApi` 的 `String(id)`、`day↔date`、中英类别、收入固定「收入」都对；金额只在提交时乘 100。
+- 接口清单与契约一致：`/api/meta`、`/api/transactions`（GET/POST/DELETE）、`/api/budget`（GET/PUT）、`/api/parse`、`/api/query`；分析页仍本地算。
+- 第 9 节的 6 处修正（`budgetKeywords`、`refreshAnswers`、`resolveMonth`、首页多笔走 `/api/parse`、`thisMonth()` 替换写死日期、`validBudget` 放行 0）逐条落实；9.2 的四件事（隐藏编辑、预算问答留本地、启动拉 6 个月、月份下拉 6 个月）也都做了。
+
+### 10.2 合并前必须补（阻塞项）
+
+1. **PR #11 描述不达标。** 按第 8 节补全：用了哪几条接口、编辑功能怎么处理、预算问答怎么分流、哪些图表仍留本地；再贴第 6 节验收截图或录屏。只写「按返工文件修改了」不算。
+2. **运行验收推迟到 parser v2 合入 main 之后。** 现在 `backend/parser.py` 还是 v1，`/api/meta` 因缺 `parser.ALL_CATEGORIES` / `parser.INCOME` 返回 500，`boot()` 第一步就失败，第 6 节的 10 条、9.3 的 3 条都无法执行。B 的 parser 合进 main 后，切到 `front-ui`、`git merge main`、重跑这 13 条，全绿再合 PR #11。
+
+### 10.3 建议改，不阻塞
+
+- `boot()` 里校验 `/api/meta` 时要求 `item.label === item.key`。现在 `main.py` 确实这么返回，但这是硬耦合，后台哪天给类别换显示名就会炸；建议加一行注释说明「label 目前必须等于 key」，或放宽成只校验 key。
+- `homePage()` 里 `caps.sort((a,b)=>budgetUsage(b.category).ratio - ...)` 没判空。正常流程下预算和 `budgetStats` 是同时写入的，但接口异常或以后只刷预算不刷统计时会抛 `TypeError`；建议改成 `(budgetUsage(b.category)?.ratio ?? -1)`。
+- 未使用的 `.demo` 样式可以留着，`index.html` 已无引用，不影响。
