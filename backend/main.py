@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import db, parser
+from backend.ai import maybe_fill
 
 APP_DIR = Path(__file__).resolve().parent.parent
 FRONTEND = APP_DIR / "frontend" / "finora-ai"
@@ -150,7 +151,7 @@ def api_parse(payload: dict) -> dict:
     text = payload.get("text") if isinstance(payload, dict) else None
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
-    return parser.parse_text(text.strip())
+    return maybe_fill(text.strip(), parser.parse_text(text.strip()))
 
 
 @app.get("/api/transactions")
