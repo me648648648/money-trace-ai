@@ -36,57 +36,119 @@ const categories = {
  study:{label:'学习教育',color:'#caccf3'}, other:{label:'其他',color:'#e6dfcb'}
 };
 const navItems = {home:['总览','grid'],transactions:['流水','list'],analysis:['分析','chart'],assistant:['AI 查账','chat'],budget:['预算','budget']};
-const anchorDate='2026-11-13', baseMonth='2026-11', storageKey='finora-preview-v1';
-const demos=[
- ['11-13','food',2500,'二食堂午饭'],['11-13','shop',12890,'校园超市'],['11-12','food',3200,'便利店'],['11-13','travel',2800,'回学校的车费'],['11-10','study',8600,'课程资料'],['11-09','food',4300,'周末聚餐'],['11-08','fun',6300,'电影票'],['11-07','shop',14100,'运动用品'],['11-05','travel',15800,'公交卡充值'],['11-04','health',3500,'药店'],['11-01','rent',68000,'住宿费'],['11-01','other',250000,'本月生活费','income'],
- ['10-27','food',8700,'餐饮'],['10-18','travel',11600,'交通'],['10-15','shop',34000,'生活用品'],['10-05','study',9400,'教材'],['10-01','rent',68000,'住宿费'],
- ['09-24','food',13800,'餐饮'],['09-14','travel',22000,'出行'],['09-10','shop',23200,'购物'],['09-01','rent',68000,'住宿费'],
- ['08-25','food',17100,'餐饮'],['08-16','fun',11300,'活动'],['08-05','shop',16400,'购物'],['08-01','rent',68000,'住宿费'],
- ['07-26','food',14000,'餐饮'],['07-12','travel',22500,'交通'],['07-01','rent',68000,'住宿费'],
- ['06-25','food',11900,'餐饮'],['06-12','study',11800,'学习'],['06-01','rent',68000,'住宿费']
-];
-const exampleLedger=() => ({
- transactions:demos.map(([date,category,amount,merchant,type='expense'],index)=>({id:'demo-'+index,date:'2026-'+date,category,amount,merchant,type,note:''})),
- budgets:[{month:baseMonth,category:'all',amount:170000},{month:baseMonth,category:'food',amount:12000},{month:baseMonth,category:'travel',amount:18000}]
-});
+const apiCategories=Object.fromEntries(Object.entries(categories).map(([key,item])=>[item.label,key]));
+function today(){
+ const date=new Date();
+ return String(date.getFullYear()).padStart(4,'0')+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');
+}
+function thisMonth(){return today().slice(0,7);}
 function validLedgerDate(value){
  if(typeof value!=='string'||!/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/.test(value))return false;
- if(value<'2000-01-01'||value>'2100-12-31')return false;
  const date=new Date(value+'T00:00:00Z');
  return Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===value;
 }
-function validLedgerAmount(value){
- return Number.isSafeInteger(value)&&value>=1&&value<=999999999;
-}
+function validLedgerAmount(value){return Number.isSafeInteger(value)&&value>=1&&value<=999999999;}
 function validTransaction(item){
- return !!item&&typeof item.id==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(item.id)
-  &&validLedgerDate(item.date)&&validLedgerAmount(item.amount)&&typeof item.category==='string'&&Object.hasOwn(categories,item.category)
-  &&(item.type==='expense'||item.type==='income')
-  &&typeof item.merchant==='string'&&item.merchant.length<=70
-  &&typeof item.note==='string'&&item.note.length<=120;
+ return !!item&&validLedgerDate(item.date)&&validLedgerAmount(item.amount)
+  &&Object.hasOwn(categories,item.category)&&(item.type==='expense'||item.type==='income')
+  &&typeof item.merchant==='string'&&typeof item.note==='string';
 }
 function validBudget(item){
- return !!item&&typeof item.month==='string'&&validLedgerDate(item.month+'-01')
-  &&validLedgerAmount(item.amount)&&typeof item.category==='string'
+ return !!item&&validLedgerDate(item.month+'-01')&&Number.isSafeInteger(item.amount)&&item.amount>=0&&item.amount<=999999999
   &&(item.category==='all'||Object.hasOwn(categories,item.category));
 }
-function loadLedger(){
+const state={page:'home',month:thisMonth(),ledger:{transactions:[],budgets:[]},budgetStats:{},meta:null,ready:false,loadError:'',filters:{category:'all',type:'all',query:''},messages:[],thinking:false,justSaved:null,homeChat:{text:'',mode:'input'}};
+const monthVersions=new Map();
+const loadedMonths=new Set();
+let monthRequest=0;
+async function api(path,options={}){
+ let response;
  try{
-  const entry=JSON.parse(localStorage.getItem(storageKey));
-  if(Array.isArray(entry?.transactions)&&Array.isArray(entry?.budgets)){
-   return {transactions:entry.transactions.filter(validTransaction),budgets:entry.budgets.filter(validBudget)};
-  }
- }catch{}
- return exampleLedger();
+  response=await fetch(path,{...options,cache:'no-store',headers:{Accept:'application/json',...(options.body?{'Content-Type':'application/json'}:{})}});
+ }catch{
+  throw new Error('无法连接服务。若刚提交过账单，请先刷新核对，再决定是否重试。');
+ }
+ const data=await response.json().catch(()=>null);
+ if(!response.ok)throw new Error(typeof data?.detail==='string'?data.detail:'请求失败（HTTP '+response.status+'），请联系对应接口负责人。');
+ if(data===null)throw new Error('接口没有返回有效 JSON，请核对契约 v2。');
+ return data;
 }
-const state={page:'home',month:baseMonth,ledger:loadLedger(),filters:{category:'all',type:'all',query:''},messages:[],thinking:false,justSaved:null,homeChat:{text:'',mode:'input'}};
+function categoryFromApi(category,type){
+ if(type==='income'&&category===state.meta.income)return 'other';
+ if(type==='income')throw new Error('收入分类与契约 v2 不符。');
+ if(!Object.hasOwn(apiCategories,category))throw new Error('接口返回了未支持的分类，请核对契约 v2。');
+ return apiCategories[category];
+}
+function fromApi(item){
+ if(!item||!Number.isSafeInteger(item.id)||item.id<1||!validLedgerDate(item.day)
+  ||!Number.isSafeInteger(item.amount)||item.amount<=0||!['expense','income'].includes(item.type)
+  ||typeof item.merchant!=='string'||typeof item.note!=='string')throw new Error('流水响应字段与契约 v2 不符。');
+ return {id:String(item.id),date:item.day,amount:item.amount,type:item.type,category:categoryFromApi(item.category,item.type),merchant:item.merchant,note:item.note};
+}
+function toApi(item){
+ if(!validTransaction(item))throw new Error('请检查金额、日期和分类。');
+ return {day:item.date,amount:item.amount,type:item.type,category:item.type==='income'?state.meta.income:categories[item.category].label,merchant:item.merchant,note:item.note};
+}
+async function refreshMonth(month=state.month,withBudget=true){
+ const version=(monthVersions.get(month)||0)+1;
+ monthVersions.set(month,version);
+ const requests=[api('/api/transactions?limit=100&month='+encodeURIComponent(month))];
+ if(withBudget)requests.push(api('/api/budget?month='+encodeURIComponent(month)));
+ const [rows,budget]=await Promise.all(requests);
+ if(!Array.isArray(rows.items))throw new Error('流水列表响应缺少 items。');
+ const transactions=rows.items.map(fromApi);
+ let budgets,stats;
+ if(withBudget){
+  if(budget.month!==month||!Array.isArray(budget.items))throw new Error('预算响应字段与契约 v2 不符。');
+  budgets=[];stats={};
+  for(const item of budget.items){
+   if(item.budget===null)continue;
+   if(!Number.isSafeInteger(item.budget)||item.budget<0||!Number.isSafeInteger(item.used)||item.used<0
+    ||!(item.ratio===null||Number.isFinite(item.ratio)))throw new Error('预算金额或进度无效。');
+   const category=item.category==='all'?'all':categoryFromApi(item.category,'expense');
+   budgets.push({month,category,amount:item.budget});
+   stats[category]={spent:item.used,ratio:item.ratio};
+  }
+ }
+ if(monthVersions.get(month)!==version)return;
+ const combined=[...state.ledger.transactions.filter(item=>!item.date.startsWith(month)),...transactions];
+ state.ledger.transactions=[...new Map(combined.map(item=>[item.id,item])).values()];
+ if(withBudget){
+  state.ledger.budgets=[...state.ledger.budgets.filter(item=>item.month!==month),...budgets];
+  state.budgetStats[month]=stats;
+ }
+ loadedMonths.add(month);
+}
+async function boot(){
+ state.ready=false;state.loadError='';render();
+ try{
+  const meta=await api('/api/meta');
+  if(!validLedgerDate(meta.today)||typeof meta.income!=='string'||!Array.isArray(meta.categories)
+   ||new Set(meta.categories.map(item=>item.key)).size!==Object.keys(categories).length
+   ||meta.categories.some(item=>!Object.hasOwn(apiCategories,item.key)||item.label!==item.key))throw new Error('元信息与契约 v2 不符，请确认解析器 v2 已交付。');
+  state.meta=meta;
+  for(const item of meta.categories)categories[apiCategories[item.key]].label=item.label;
+  state.month=meta.today.slice(0,7);
+  const months=new Set([state.month,...Array.from({length:6},(_,i)=>shiftMonth(thisMonth(),-i))]);
+  for(const month of months)await refreshMonth(month,month===state.month);
+  state.ready=true;
+ }catch(error){state.loadError=error.message;notify(error.message);}
+ render();
+}
+async function refreshAfterWrite(months,message){
+ try{
+  for(const month of new Set(months))await refreshMonth(month);
+  refreshAnswers();render();notify(message);
+ }catch(error){
+  render();notify(message+'；刷新失败：'+error.message);
+ }
+}
 const view=document.querySelector('#view'), dialog=document.querySelector('#dialog');
 const format = new Intl.NumberFormat('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const money = (amount) => '¥'+format.format(amount/100);
 function rollingAmount(key, amount, unit='¥'){
  return `<span class="rolling-amount" data-amount-key="${escape(key)}" data-amount-value="${amount}" data-amount-unit="${unit}"><span class="amount-roll-final">${unit}${format.format(amount/100)}</span><span class="amount-roll-live" aria-hidden="true"></span></span>`;
 }
-const newTransactionId=()=> 'txn-'+(crypto.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,9));
 const escape = (value) => String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const label=(cat)=>categories[cat]?.label||'其他';
 const total=(records)=>records.reduce((sum,item)=>sum+item.amount,0);
@@ -100,7 +162,6 @@ function offsetDate(date,days){
  dt.setUTCDate(dt.getUTCDate()+days);
  return dt.toISOString().slice(0,10);
 }
-const dateAt=days=>offsetDate(anchorDate,days);
 function monthEnd(month){return offsetDate(shiftMonth(month,1)+'-01',-1);}
 const rangeLabel=month=>month+'-01 至 '+monthEnd(month);
 const compare=(a,b)=>b.date.localeCompare(a.date);
@@ -123,25 +184,15 @@ function notify(text){
  const el=document.querySelector('#toast');el.textContent=text;
  clearTimeout(notify.timer);notify.timer=setTimeout(()=>{el.textContent='';},3100);
 }
-function persist(ledger){
- try{localStorage.setItem(storageKey,JSON.stringify(ledger));}
- catch(error){if(error.name==='QuotaExceededError')return false; state.ledger=ledger;return 'memory';}
- state.ledger=ledger;return true;
-}
-function persistNotice(result,normal){
- notify(result==='memory'?normal+'，仅保留在当前页面。':normal);
-}
 function navButton(key,[name,shape]){
  const selected=state.page===key;
  return `<button type="button" class="navbtn ${selected?'active':''}" data-page="${key}" aria-label="${name}" ${selected?'aria-current="page"':''}>${icon(shape,20)}<span class="nav-text">${name}</span><span class="nav-indicator"></span></button>`;
 }
 const pageTitle={home:'账本总览',transactions:'收支流水',analysis:'消费分析',assistant:'AI 查账',budget:'预算管理'};
-const pagesDesc={transactions:'按日期查找、筛选和编辑你的账单。',analysis:'查看消费构成与支出变化。',assistant:'查询消费、预算进度和近 30 天支出。',budget:'设置月度限额，查看使用进度。'};
+const pagesDesc={transactions:'按日期查找和筛选你的账单。',analysis:'查看消费构成与支出变化。',assistant:'查询消费、预算进度和近 30 天支出。',budget:'设置月度限额，查看使用进度。'};
 function monthPicker(){
- const months=new Set(Array.from({length:12},(_,i)=>shiftMonth(baseMonth,2-i)));
+ const months=new Set(Array.from({length:6},(_,i)=>shiftMonth(thisMonth(),-i)));
  months.add(state.month);
- state.ledger.transactions.forEach(item=>months.add(item.date.slice(0,7)));
- state.ledger.budgets.forEach(item=>months.add(item.month));
  return `<label class="select-wrap">${icon('calendar',16)}<select id="period" aria-label="选择账本月份">${[...months].sort().reverse().map(month=>`<option value="${month}" ${state.month===month?'selected':''}>${monthLabel(month)}</option>`).join('')}</select></label>`;
 }
 function button(action,name,symbol='add',className='primary',extra=''){
@@ -168,20 +219,26 @@ function render(focus=false){
  document.querySelector('#desktop-nav').innerHTML=Object.entries(navItems).map(([key,data])=>navButton(key,data)).join('');
  document.querySelector('#mobile-nav').innerHTML=mobileNav();
  document.querySelector('#crumb').innerHTML=`<span class="breadcrumb-root">Finora AI</span><span class="crumb-sep">${icon('right',13)}</span><b>${pageTitle[state.page]}</b>`;
+ if(!state.ready){
+  view.innerHTML=empty('wallet',state.loadError?'账本加载失败':'正在读取账本',state.loadError?escape(state.loadError):'正在连接服务器并读取最近六个月记录。',state.loadError?button('retry-load','重新加载','next','secondary'):'');
+  return;
+ }
  view.innerHTML=pageHeader()+({home:homePage,transactions:transactionsPage,analysis:analysisPage,assistant:assistantPage,budget:budgetPage}[state.page])();
  syncRollingAmounts(view);
  syncThinkingIcons(view);
  if(focus)view.focus({preventScroll:true});
 }
-function setMonth(month){
- if(state.month!==month){
-  state.month=month;
-  delete state.filters.ids;
-   delete state.filters.range;
-  if(state.homeChat.mode==='query')state.homeChat={text:'',mode:'input'};
-  if(state.homeChat.mode==='thinking')state.homeChat={text:state.homeChat.text,mode:'input'};
- }
- render();
+async function setMonth(month){
+ const request=++monthRequest;
+ try{
+  await refreshMonth(month);
+  if(request!==monthRequest)return false;
+  if(state.month!==month){
+   state.month=month;delete state.filters.ids;delete state.filters.range;
+   if(['query','thinking'].includes(state.homeChat.mode))state.homeChat={text:'',mode:'input'};
+  }
+  render();return true;
+ }catch(error){if(request===monthRequest){render();notify(error.message);}return false;}
 }
 function navigate(page){
  if(!Object.hasOwn(navItems,page))return;
@@ -193,6 +250,7 @@ function stat(title,amount,shape,shade,note=''){
  return `<div class="card stat"><div class="stat-label">${mark(shape,shade,16)}${title}</div><strong class="stat-value money">${rollingAmount(state.page+'-'+shape,amount)}</strong>${note?`<span class="micro stat-note">${note}</span>`:''}</div>`;
 }
 function spendingChange(month=state.month){
+ if(!loadedMonths.has(shiftMonth(month,-1)))return '上月数据未加载';
  const current=total(expenses(month)), previous=total(expenses(shiftMonth(month,-1)));
  if(!previous)return current?'上月无支出记录':'两月均无支出记录';
  const change=(current-previous)/previous*100;
@@ -202,17 +260,19 @@ function spendingChange(month=state.month){
 function budgetUsage(category='all',month=state.month){
  const budget=state.ledger.budgets.find(item=>item.month===month&&item.category===category);
  if(!budget)return null;
- const spent=total(expenses(month).filter(item=>category==='all'||item.category===category));
- const ratio=spent/budget.amount;
- return {budget,spent,ratio,remaining:budget.amount-spent,status:ratio>1?'已超出':ratio===1?'已用完':ratio>=.8?'接近上限':'预算内'};
+ const stats=state.budgetStats[month]?.[category];
+ if(!stats)return null;
+ const {spent,ratio}=stats;
+ const remaining=budget.amount-spent;
+ return {budget,spent,ratio,remaining,status:remaining<0?'已超出':remaining===0?'已用完':ratio>=.8?'接近上限':'预算内'};
 }
 function progress(ratio){
  const fill=ratio>1?'over':ratio>=.8?'warn':'';
- return `<div class="track" aria-hidden="true"><span class="${fill}" style="width:${Math.min(ratio*100,100)}%"></span></div>`;
+ return `<div class="track" aria-hidden="true"><span class="${fill}" style="width:${Math.max(0,Math.min((ratio||0)*100,100))}%"></span></div>`;
 }
-function percent(ratio){return Math.round(ratio*100)+'%';}
+function percent(ratio){return ratio===null?'—':Math.round(ratio*100)+'%';}
 function budgetTone(data){
- return data.ratio>1?'danger':data.ratio>=.8?'warning':'positive';
+ return data.remaining<0?'danger':data.ratio>=.8?'warning':'positive';
 }
 function statusPill(data){
  const text=data.remaining<0?'已超出 '+money(-data.remaining):data.status;
@@ -229,7 +289,7 @@ function budgetComparison(item,month=state.month){
 const trendModes={home:'bar',analysis:'bar'};
 
 function trend(mode='bar',animate=false){
- const months=Array.from({length:6},(_,i)=>shiftMonth(state.month,i-5));
+ const months=Array.from({length:6},(_,i)=>shiftMonth(thisMonth(),i-5));
  const values=months.map(month=>total(expenses(month)));
  const maxValue=Math.max(1,...values);
  const step=Math.max(10000,Math.ceil(maxValue/40000)*10000);
@@ -256,7 +316,7 @@ function trendCard(extra='',action=''){
   <button type="button" data-action="trend-mode" data-mode="line" aria-pressed="${mode==='line'}">折线图</button>
  </div>${action}</div>`:action;
  const note=mode?'近 6 个月 · 点击图中月份切换':'近 6 个月 · 选择柱形切换月份';
- return `<section class="card pad trend-card ${extra}">${panelHeading('支出趋势',note,controls)}${trend(mode)}</section>`;
+ return `<section class="card pad trend-card ${extra}">${panelHeading('支出趋势',note,controls)}${trend(mode)}<p class="micro">每月最多统计最近 100 笔</p></section>`;
 }
 function setTrendMode(control){
  const mode=control.dataset.mode;
@@ -281,7 +341,7 @@ function row(item){
 }
 function homeBudget(){
  const data=budgetUsage();
- const period=state.month===baseMonth?'本月':'当月';
+ const period=state.month===thisMonth()?'本月':'当月';
  const heading=data?.remaining<0?'总预算已超出':period+'预算剩余';
  const value=data
   ?`<div class="home-budget-value"><strong class="money" id="remaining-budget"><span class="amount-unit">¥</span>${rollingAmount('home-remaining',Math.abs(data.remaining),'')}</strong>${statusPill(data)}</div>`
@@ -295,10 +355,10 @@ function homeBudget(){
 }
 function homePage(){
  const records=ledgerFor();
- const isCurrent=state.month===baseMonth;
- const visible=isCurrent?records.filter(item=>item.date===anchorDate):records;
- const title=isCurrent?'今日流水':'最近流水';
- const note=(isCurrent?dateLabel(anchorDate)+' · 示例日期':monthLabel(state.month))+' · '+visible.length+' 笔';
+ const isCurrent=state.month===thisMonth();
+ const visible=records;
+ const title='最近流水';
+ const note=monthLabel(state.month)+' · '+visible.length+' 笔';
  const caps=state.ledger.budgets.filter(item=>item.month===state.month&&item.category!=='all');
  const urgent=caps.sort((a,b)=>budgetUsage(b.category).ratio-budgetUsage(a.category).ratio)[0];
  const goAnalysis='<button type="button" class="plain" data-page="analysis">看分析'+icon('diagonal',15)+'</button>';
@@ -320,7 +380,7 @@ function homePage(){
   </div>
   <section class="card pad today-card">
    ${panelHeading(title,note,button('all-transactions','查看全部','diagonal','plain'))}
-   <div class="row-list">${visible.length?visible.slice(0,3).map(row).join(''):empty('list',isCurrent?'今天还没有流水':'这个月还没有流水','记下一笔后，预算也会一起更新。',button('add','记一笔'))}</div>
+   <div class="row-list">${visible.length?visible.slice(0,3).map(row).join(''):empty('list','这个月还没有流水','记下一笔后，预算也会一起更新。',button('add','记一笔'))}</div>
   </section>
   ${trendCard('home-trend',goAnalysis)}
  </div>`;
@@ -348,15 +408,16 @@ function transactionResults(){
  let date='';
  const groupedRows=matches.map(item=>{
   const heading=date!==item.date
-   ?`<h2 class="group-label"><time class="group-date" datetime="${escape(item.date)}">${dateLabel(item.date)}</time>${item.date===anchorDate?'<span class="group-date-note">演示今日</span>':''}</h2>`
+   ?`<h2 class="group-label"><time class="group-date" datetime="${escape(item.date)}">${dateLabel(item.date)}</time>${item.date===today()?'<span class="group-date-note">今天</span>':''}</h2>`
    :'';
   date=item.date;
   return heading+row(item);
  }).join('');
  return `<div class="list-meta"><span class="micro">${matches.length} 笔记录</span><span class="micro money">筛选支出 ${money(sum)}</span></div><div class="row-list">${groupedRows}</div>`;
 }
-function openCategory(category='all',month=state.month,type='expense',range){
- state.month=month;state.filters={category,type,query:'',range};navigate('transactions');
+async function openCategory(category='all',month=state.month,type='expense',range){
+ if(!await setMonth(month))return;
+ state.filters={category,type,query:'',range};navigate('transactions');
 }
 function analysisPage(){
  const records=ledgerFor(), outgoing=total(expenses()), incoming=total(records.filter(item=>item.type==='income'));
@@ -456,7 +517,6 @@ function suggestion(text,shape='chat'){
  return `<button type="button" class="suggestion" data-action="ask" data-question="${escape(text)}">${icon(shape,16)}${escape(text)}${icon('right',15)}</button>`;
 }
 const quickQuestions=['所选月份哪类支出最高？','所选月份哪些消费接近或超出预算？','分析最近 30 天的消费变化','所选月份可以从哪些方面调整支出？'];
-const aiResponseDelay=420;
 function thinkingIcon(busy){
  return `<span class="thinking-mark" aria-hidden="true"${busy?' data-thinking':''}><canvas></canvas></span>`;
 }
@@ -469,39 +529,38 @@ function assistantPage(){
  </section><aside class="ai-aside" aria-label="账本上下文">
  ${trendCard()}
  <section class="ai-context">${panelHeading('查询范围',monthLabel(state.month))}
- <p class="micro">指定月份可直接查询。没写时间时使用页面选中的月份，示例账本以 2026 年 11 月 13 日为今天。</p></section>
+ <p class="micro">查账结果会显示系统理解的日期范围。预算按自然月查询。</p></section>
  </aside></div>`;
 }
 function answerCard(entry,amountKey='home-answer-'+entry.question){
- if(!entry.result)return '<section class="answer answer-loading" role="status">正在查找账本记录…</section>';
  const data=entry.result;
- if(data.kind==='failed')return `<section class="answer" role="alert"><p>查账暂时失败。</p>${button('ask','重试','next','plain',`data-question="${escape(entry.question)}"`)}</section>`;
- if(data.kind==='clarify')return `<section class="answer"><p>${data.text}</p>${suggestion('所选月份哪类支出最高？')}</section>`;
+ if(!data)return '<section class="answer answer-loading" role="status">正在查找账本记录…</section>';
+ if(data.kind==='failed')return `<section class="answer" role="alert"><p>${escape(data.text||'查账暂时失败。')}</p>${button('ask','重试','next','plain',`data-question="${escape(entry.question)}"`)}</section>`;
  if(data.kind==='budget'||data.kind==='adjust'){
   const rows=data.caps.map(({budget})=>budgetComparison(budget,data.month)).join('');
-  return `<section class="answer"><div class="micro inline">${icon('budget',15)} ${monthLabel(data.month)}</div><h3>${data.title}</h3>
-   ${data.text?`<p>${data.text}</p>`:''}${rows?`<div class="answer-insights">${rows}</div>`:''}
+  return `<section class="answer"><div class="micro inline">${icon('budget',15)} ${monthLabel(data.month)}</div><h3>${escape(data.title)}</h3>
+   ${data.text?`<p>${escape(data.text)}</p>`:''}${rows?`<div class="answer-insights">${rows}</div>`:''}
    ${data.category?button('answer-detail','查看对应流水','next','plain',`data-month="${data.month}" data-category="${data.category}" data-type="expense"`):''}
    ${button('open-answer-budget','查看该月预算','diagonal','plain',`data-month="${data.month}"`)}
   </section>`;
  }
- const scope=(data.range?data.range.join(' 至 '):rangeLabel(data.month))+' · '+(data.ranking||data.category==='all'?'全部分类':label(data.category))+' · '+(data.type==='income'?'收入':'支出');
- const heading=data.kind==='empty'?'没有匹配的记录':rollingAmount(amountKey,data.amount);
- const lead=data.kind==='empty'?'可以更换时间或分类后再查。':data.title+' · '+data.count+' 笔记录';
- const detailAttrs=`data-month="${data.month}" data-category="${data.category}" data-type="${data.type}"`+(data.range?` data-start="${data.range[0]}" data-end="${data.range[1]}"`:'');
- const ranking=data.ranking?.slice(0,5).map(([cat,amount])=>
-  `<button type="button" class="category-row" data-action="answer-detail" data-month="${data.month}" data-type="expense" data-category="${cat}">${catMark(cat)}<span>${label(cat)}</span><span class="money">${money(amount)}</span>${icon('right',14)}</button>`).join('');
- return `<section class="answer"><div class="micro inline">${icon('chat',15)} 账本查询</div><h3 class="money">${heading}</h3><p>${lead}</p><p class="micro">${scope}</p>
- ${data.comparison?`<p class="micro">${data.comparison}</p>`:''}
- ${ranking?`<div class="answer-insights">${ranking}</div>`:''}
- ${data.kind!=='empty'?button('answer-detail',data.ranking?'查看首位分类明细':'查看明细','next','plain',detailAttrs):''}</section>`;
+ const understood=data.understood;
+ const scope=understood.from+' ~ '+understood.to+' · '+(understood.category||'全部分类')+' · '+(understood.type==='income'?'收入':'支出')+' · '+understood.metric;
+ const amount=Number.isSafeInteger(data.data.amount)?`<h3 class="money">${rollingAmount(amountKey,data.data.amount)}</h3>`:'';
+ const count=Number.isSafeInteger(data.data.count)?`<p class="micro">${data.data.count} 笔记录</p>`:'';
+ const ranking=(understood.metric==='ranking'?data.data.items:[]).map(item=>{
+  const category=categoryFromApi(item.category,understood.type);
+  return `<div class="category-row">${catMark(category)}<span>${escape(item.category)}</span><span class="money">${money(item.amount)}</span></div>`;
+ }).join('');
+ return `<section class="answer"><p>${escape(data.answer)}</p>${amount}${count}<p class="micro">系统理解：${escape(scope)}</p>
+ ${ranking?`<div class="answer-insights">${ranking}</div>`:''}${entry.stale?'<p class="micro">账本已有更新，可重新提问获取最新统计。</p>':''}</section>`;
 }
-const keywords={food:/餐饮|吃饭|午饭|晚饭|早饭|早餐|午餐|晚餐|饭|奶茶|咖啡|外卖|食堂|餐厅|饮料|聚餐/,travel:/交通|地铁|公交|打车|高铁|车费|网约车|出行|滴滴/,shop:/购物|超市|生活用品|网购|衣服|淘宝|京东|鞋/,rent:/居住|房租|住宿|水电|宿舍/,fun:/娱乐|电影|游戏|演唱会/,health:/医疗|医院|药|健康/,study:/学习|教育|教材|课程|书/,other:/其他/};
-function matchingCategories(text){return Object.entries(keywords).filter(([,pattern])=>pattern.test(text)).map(([key])=>key);}
+const budgetKeywords={food:/餐饮|吃饭|午饭|晚饭|早饭|早餐|午餐|晚餐|饭|奶茶|咖啡|外卖|食堂|餐厅|饮料|聚餐/,travel:/交通|地铁|公交|打车|高铁|车费|网约车|出行|滴滴/,shop:/购物|超市|生活用品|网购|衣服|淘宝|京东|鞋/,rent:/居住|房租|住宿|水电|宿舍/,fun:/娱乐|电影|游戏|演唱会/,health:/医疗|医院|药|健康/,study:/学习|教育|教材|课程|书/,other:/其他/};
+function matchingBudgetCategories(text){return Object.entries(budgetKeywords).filter(([,pattern])=>pattern.test(text)).map(([key])=>key);}
 function queryBudget(question,month){
  const usages=state.ledger.budgets.filter(item=>item.month===month)
   .map(item=>budgetUsage(item.category,month)).sort((a,b)=>b.ratio-a.ratio);
- const flagged=usages.filter(item=>item.ratio>=.8);
+ const flagged=usages.filter(item=>item.remaining<0||item.ratio>=.8);
  if(/调整|节省|省钱/.test(question)){
   const risk=flagged.find(item=>item.budget.category!=='all');
   const top=breakdown(month)[0];
@@ -511,69 +570,65 @@ function queryBudget(question,month){
    top?label(category)+'支出最高（'+money(top[1])+'），可以先复核该分类的大额流水。':'当前所选月份没有支出记录。';
   return {kind:'adjust',month,title:'优先复核的支出',text,caps:risk?[risk]:[],category};
  }
- const matches=matchingCategories(question);
+ const matches=matchingBudgetCategories(question);
  const relevant=matches.length?usages.filter(item=>matches.includes(item.budget.category)):usages;
  const asksRisk=/接近|超出|风险|可能/.test(question);
- const caps=asksRisk?relevant.filter(item=>item.ratio>=.8):relevant;
+ const caps=asksRisk?relevant.filter(item=>item.remaining<0||item.ratio>=.8):relevant;
  const title=!relevant.length?'还没有设置预算':asksRisk?(caps.length?'需要留意的预算':'预算进度在 80% 以下'):'预算使用情况';
  return {kind:'budget',month,title,caps};
 }
-function queryRecent(month,category,type){
- const end=month===baseMonth?anchorDate:monthEnd(month);
- const range=[offsetDate(end,-29),end];
- const previousRange=[offsetDate(end,-59),offsetDate(end,-30)];
- const matches=item=>item.type===type&&(category==='all'||item.category===category);
- const records=recordsBetween(...range).filter(matches);
- const amount=total(records), previous=total(recordsBetween(...previousRange).filter(matches));
- const change=amount-previous;
- const comparison='前 30 天 '+money(previous)+(change===0?' · 金额持平':' · '+(change>0?'增加 ':'减少 ')+money(Math.abs(change)));
- return {kind:records.length?'answer':'empty',month,category,type,amount,title:'近 30 天'+(type==='income'?'收入':'支出'),count:records.length,range,comparison};
+const isBudgetQuestion=question=>/预算|限额|超支|还剩多少|调整|节省|省钱/.test(question);
+function resolveMonth(question,fallback=state.month){
+ const explicit=question.match(/(?:(20\d{2})[年./-])?(1[0-2]|0?[1-9])月/);
+ if(explicit)return keyMonth(explicit[1]||fallback.slice(0,4),Number(explicit[2]));
+ if(/上个?月/.test(question))return shiftMonth(thisMonth(),-1);
+ if(/本月|这个月|这月|最近\s*(30|三十)\s*天/.test(question))return thisMonth();
+ return fallback;
 }
-function queryLedger(question,fallbackMonth){
- const explicit=question.match(/(?:(20\d{2})\s*[年./-]\s*)?(1[0-2]|0?[1-9])\s*月/) || question.match(/(20\d{2})[-/](1[0-2]|0?[1-9])(?!\d)/);
- const requested=explicit?keyMonth(explicit[1]||fallbackMonth.slice(0,4),Number(explicit[2])):null;
- const month=requested||(/上个?月/.test(question)?shiftMonth(baseMonth,-1):/这(?:个)?月|本月/.test(question)?baseMonth:fallbackMonth);
- const matches=matchingCategories(question);
- const type=/收入|进账/.test(question)?'income':'expense';
- if(matches.length>1)return {kind:'clarify',text:'这次想查哪一个分类？可以分别查询不同类别。'};
- if(/(?:最近|近|过去)\s*(?:30|三十)\s*天/.test(question)&&!/预算/.test(question))return queryRecent(month,matches[0]||'all',type);
- if(/上上个月|前年|去年|今年|近[一二三四五六七八九十\d]+个?月|最近|周|星期|昨天|今天|前天|[一二三四五六七八九十]+月|\d+\s*[日号]|到.*月|至.*月/.test(question)){
-  return {kind:'clarify',text:'可以按月份或近 30 天查账，例如「上个月」或「分析最近 30 天的消费变化」。'};
+async function requestAnswer(question,month){
+ if(isBudgetQuestion(question)){
+  const target=resolveMonth(question,month);
+  await refreshMonth(target);
+  const result=queryBudget(question,target);
+  if(/最近\s*(30|三十)\s*天/.test(question))result.text='预算按自然月设置，以下为'+monthLabel(target)+'的预算。';
+  return result;
  }
- if(/预算|调整|节省|省钱/.test(question))return queryBudget(question,month);
- const asksRank=/哪[个一]?[类项]|什么类别|排名|排行|最多|最高/.test(question);
- if(!asksRank&&!matches.length&&!/总|消费|花|支出|开销|收入|进账|账单/.test(question))return {kind:'clarify',text:'可以查询总支出、分类金额、预算或支出排行。'};
- if(asksRank&&type==='income')return {kind:'clarify',text:'分类排行仅统计支出。可以查询某个月的收入总额。'};
- const ranking=asksRank?breakdown(month):null;
- const category=ranking?.[0]?.[0]||matches[0]||'all';
- const records=ledgerFor(month).filter(item=>item.type===type&&(category==='all'||item.category===category));
- const amount=total(records);
- const title=asksRank?'支出最高 · '+label(category):(category==='all'?'总'+(type==='income'?'收入':'支出'):label(category)+(type==='income'?'收入':'支出'));
- return {kind:records.length?'answer':'empty',month,category,type,amount,title,ranking,count:records.length};
+ const scoped=question.replace(/所选月份/g,month.replace('-','年')+'月');
+ const result=await api('/api/query',{method:'POST',body:JSON.stringify({question:scoped})});
+ if(typeof result.answer!=='string'||!result.data||!validLedgerDate(result.understood?.from)||!validLedgerDate(result.understood?.to)
+  ||!['sum','count','ranking'].includes(result.understood.metric))throw new Error('查账响应字段与契约 v2 不符。');
+ if(!['expense','income'].includes(result.understood.type))throw new Error('查账收支类型与契约 v2 不符。');
+ if(result.understood.metric==='ranking'){
+  if(!Array.isArray(result.data.items))throw new Error('排行响应缺少 items。');
+  for(const item of result.data.items){
+   categoryFromApi(item.category,result.understood.type);
+   if(!Number.isSafeInteger(item.amount)||item.amount<0)throw new Error('排行金额与契约 v2 不符。');
+  }
+ }else if(!Number.isSafeInteger(result.data.amount)||result.data.amount<0||!Number.isSafeInteger(result.data.count)||result.data.count<0){
+  throw new Error('查账金额或笔数与契约 v2 不符。');
+ }
+ return {...result,kind:'api'};
 }
-function ask(question){
+async function ask(question){
  const clean=question.trim();
  if(!clean||state.thinking)return;
- const month=state.month;const entry={question:clean,month,result:null};
- state.messages.push(entry);
- state.thinking=true;
- if(state.page==='assistant')render();
- else navigate('assistant');
- document.querySelector('.message-turn:last-child')?.scrollIntoView({block:'nearest'});
- setTimeout(()=>{
-  try{entry.result=queryLedger(clean,month);}catch{entry.result={kind:'failed'};}
+ const entry={question:clean,month:state.month,result:null};
+ state.messages.push(entry);state.thinking=true;
+ if(state.page==='assistant')render();else navigate('assistant');
+ try{entry.result=await requestAnswer(clean,entry.month);}
+ catch(error){entry.result={kind:'failed',text:error.message};}
+ finally{
   state.thinking=false;
   if(state.page==='assistant'){
    render();
    const answer=document.querySelector('.message-turn:last-child .answer');
-   answer?.setAttribute('tabindex','-1');
-   answer?.focus({preventScroll:true});
+   answer?.setAttribute('tabindex','-1');answer?.focus({preventScroll:true});
    answer?.scrollIntoView({block:'nearest'});
   }
- },aiResponseDelay);
+ }
 }
 let editor=null, receiptUrl='', trigger=null;
-const editorDefaults=(month=state.month)=>({amount:'',date:month===baseMonth?anchorDate:month+'-01',type:'expense',category:'',merchant:'',note:''});
+const editorDefaults=(month=state.month)=>({amount:'',date:month===thisMonth()?today():month+'-01',type:'expense',category:'',merchant:'',note:''});
 function showDialog(title,markup){
  const opening=!dialog.open;
  if(opening)trigger=document.activeElement;
@@ -583,16 +638,16 @@ function showDialog(title,markup){
  syncRollingAmounts(dialog);
 }
 function releaseReceipt(){if(receiptUrl)URL.revokeObjectURL(receiptUrl);receiptUrl='';}
-function openEditor(item,mode=item?'manual':'text'){
+function openEditor(item,mode='text'){
  releaseReceipt();
- editor={origin:state.page,mode,id:item?.id||null,draft:item?{...item,amount:(item.amount/100).toFixed(2)}:editorDefaults(),visible:!!item||mode==='manual',busy:false,saving:false,text:'',imageName:'',imageError:'',exampleImage:false,note:''};
+ editor={origin:state.page,mode,draft:editorDefaults(),visible:mode==='manual',busy:false,saving:false,text:'',imageName:'',imageError:'',exampleImage:false,note:''};
  drawEditor();
 }
 function optionsForCategories(value,firstLabel){
  return filterOptions([['',firstLabel],...Object.keys(categories).map(cat=>[cat,label(cat)])],value);
 }
 function sampleReceipt(){
- return '<div class="draft-label" style="margin-top:7px"><strong>示例小票</strong><br>校园咖啡店 · 2026-11-13<br>实付 ¥18.50</div>';
+ return '<div class="draft-label" style="margin-top:7px"><strong>示例小票</strong><br>校园咖啡店 · '+today()+'<br>实付 ¥18.50</div>';
 }
 function captureEditorDraft(){
  const form=document.querySelector('#record-form');
@@ -603,13 +658,13 @@ function captureEditorDraft(){
 function drawEditor(){
  const e=editor;
  const tabData=[['text','文字录入'],['image','图片录入'],['manual','手动填写']];
- const tabs=e.id?'':`<div class="tabs" aria-label="录入方式">${tabData.map(([value,text])=>`<button type="button" class="tab ${e.mode===value?'active':''}" data-action="entry-tab" data-mode="${value}" aria-pressed="${e.mode===value}" ${e.busy||e.saving?'disabled':''}>${text}</button>`).join('')}</div>`;
+ const tabs=`<div class="tabs" aria-label="录入方式">${tabData.map(([value,text])=>`<button type="button" class="tab ${e.mode===value?'active':''}" data-action="entry-tab" data-mode="${value}" aria-pressed="${e.mode===value}" ${e.busy||e.saving?'disabled':''}>${text}</button>`).join('')}</div>`;
  const textInput=e.mode==='text'?`<label class="field-label">记账内容<textarea id="entry-text" placeholder="例如：今天午饭 25 元" maxlength="250" ${e.busy?'disabled':''}>${escape(e.text)}</textarea></label><div class="form-actions"><button type="button" class="plain" data-action="sample-text" ${e.busy?'disabled':''}>填入示例</button>${button('parse-text',e.busy?'识别中…':'识别文字','spark','secondary',e.busy?'disabled':'')}</div>`:'';
  const imageInput=e.mode==='image'?`<div class="upload-area"><label class="field-label">选择小票或支付截图<input id="receipt-file" type="file" accept="image/png,image/jpeg,image/webp" ${e.busy?'disabled':''}></label><p class="micro">PNG、JPEG 或 WebP，最大 8 MB。图片仅在浏览器中预览。</p>${receiptUrl?`<img class="receipt-preview" src="${escape(receiptUrl)}" alt="已选择的小票预览"><p class="micro">${escape(e.imageName)}</p>`:e.exampleImage?sampleReceipt():''}</div>
  <div class="form-actions">${button('sample-receipt','使用示例小票','image','plain',e.busy?'disabled':'')}${button('parse-image',e.busy?'识别中…':receiptUrl?'对照图片填写':'模拟识别','spark','secondary',e.busy?'disabled':'')}</div>`:'';
  const draft=e.draft;
  const form=e.visible?`<form id="record-form">
- <div class="draft-label">${e.id?'编辑已有流水':e.mode==='manual'?'<strong>账单明细</strong>':'<strong>核对账单</strong> · 确认金额、日期与分类'}</div>
+ <div class="draft-label">${e.mode==='manual'?'<strong>账单明细</strong>':'<strong>核对账单</strong> · 确认金额、日期与分类'}</div>
  <div class="field-grid">
  <label class="field-label">金额（¥）<input name="amount" type="number" min=".01" max="9999999.99" step=".01" inputmode="decimal" required value="${escape(draft.amount)}"></label>
  <label class="field-label">日期<input name="date" type="date" min="2000-01-01" max="2100-12-31" required value="${escape(draft.date)}"></label>
@@ -619,7 +674,7 @@ function drawEditor(){
  <label class="field-label">备注<input name="note" maxlength="120" placeholder="选填" value="${escape(draft.note)}"></label>
  </div><p class="form-message" id="save-error" role="alert"></p>
  <div class="form-actions"><button type="button" class="plain" data-action="close-dialog">取消</button><button type="submit" class="primary" ${e.saving?'disabled':''}>${icon('check',16)} ${e.saving?'保存中…':'确认保存'}</button></div></form>`:'';
- showDialog(e.id?'编辑流水':'记一笔',tabs+textInput+imageInput+`<p class="form-message" role="status">${escape(e.note||e.imageError)}</p>`+form);
+ showDialog('记一笔',tabs+textInput+imageInput+`<p class="form-message" role="status">${escape(e.note||e.imageError)}</p>`+form);
 }
 function switchEntry(mode){
  captureEditorDraft();
@@ -628,41 +683,39 @@ function switchEntry(mode){
  if(mode==='manual')editor.visible=true;
  drawEditor();
 }
-function textDraft(text,month=state.month){
- const type=/收入|收到|到账|工资|生活费/.test(text)?'income':'expense';
- const hit=matchingCategories(text)[0]||(type==='income'?'other':'');
- const explicitDate=text.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
- const relative=/今天|昨天|前天/.test(text);
- const date=explicitDate?explicitDate[0]:/昨天/.test(text)?dateAt(-1):/前天/.test(text)?dateAt(-2):relative?anchorDate:editorDefaults(month).date;
- const withoutDate=text.replace(/\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g,'').replace(/\d{1,2}\s*月\s*\d{1,2}\s*[日号]/g,'');
- const marked=withoutDate.match(/(?:¥|￥)\s*(\d+(?:\.\d{1,2})?)(?![\d.])/)||withoutDate.match(/(\d+(?:\.\d{1,2})?)(?![\d.])\s*(?:元|块)/);
- const single=withoutDate.match(/(?<![\d.])\d+(?:\.\d{1,2})?(?![\d.])/g);
- return {amount:marked?.[1]||(single?.length===1?single[0]:''),date,type,category:hit,merchant:'',note:text.slice(0,120)};
+async function parseDraft(text){
+ const item=await api('/api/parse',{method:'POST',body:JSON.stringify({text})});
+ const fields={day:'日期',amount:'金额',type:'收支类型',category:'分类',merchant:'商户'};
+ if(!validLedgerDate(item.day)||!(item.amount===null||(Number.isSafeInteger(item.amount)&&item.amount>0))
+  ||!['expense','income'].includes(item.type)||typeof item.merchant!=='string'||typeof item.note!=='string'
+  ||Object.keys(fields).some(key=>typeof item.understood?.[key]!=='boolean'))throw new Error('文字解析响应与契约 v2 不符，请确认解析器 v2 已交付。');
+ return {date:item.day,amount:item.amount===null?'':(item.amount/100).toFixed(2),type:item.type,
+  category:categoryFromApi(item.category,item.type),merchant:item.merchant,note:item.note,
+  checks:Object.keys(fields).filter(key=>!item.understood[key]).map(key=>fields[key])};
 }
-function parseEditor(mode){
+async function parseEditor(mode){
  const e=editor;
  if(!e||e.busy||e.saving)return;
  if(mode==='text'){
   e.text=document.querySelector('#entry-text').value.trim();
   if(!e.text){e.note='请先输入一段记账内容。';drawEditor();return;}
  }else if(!receiptUrl&&!e.exampleImage){e.note=e.imageError||'请先选择图片或使用示例小票。';drawEditor();return;}
- captureEditorDraft();
- e.busy=true;e.note='';drawEditor();
- setTimeout(()=>{
-  if(editor!==e||!dialog.open)return;
-  e.busy=false;e.visible=true;
+ captureEditorDraft();e.busy=true;e.note='';drawEditor();
+ try{
   if(mode==='text'){
-   e.draft=textDraft(e.text);
-   e.note=e.draft.amount&&e.draft.category?'已生成记账草稿。':'有字段尚未识别，请在下方补全。';
+   const draft=await parseDraft(e.text);
+   if(editor!==e||!dialog.open)return;
+   e.draft=draft;
+   e.note=(draft.amount?'已生成草稿。':'没认出金额，请手动补。')+(draft.checks.length?'请核对：'+draft.checks.join('、')+'。':'');
   }else if(e.exampleImage){
-   e.draft={...editorDefaults(),date:anchorDate,amount:'18.50',category:'food',merchant:'校园咖啡店',note:'示例小票'};
-   e.note='示例识别完成，请核对后保存。';
+   e.draft={...editorDefaults(),date:today(),amount:'18.50',category:'food',merchant:'校园咖啡店',note:'示例小票'};
+   e.note='示例预填完成，请核对后保存。';
   }else{
-   e.draft=editorDefaults();
-   e.note='预览版会展示你的图片，可对照填写。选择示例小票可以体验预填结果。';
+   e.draft=editorDefaults();e.note='图片在本地预览，请对照填写账单。';
   }
-  drawEditor();
- },430);
+  e.visible=true;
+ }catch(error){e.note=error.message;}
+ finally{e.busy=false;if(editor===e&&dialog.open)drawEditor();}
 }
 function setReceipt(file){
  if(!editor)return;
@@ -674,41 +727,34 @@ function setReceipt(file){
  }
  receiptUrl=URL.createObjectURL(file);editor.imageName=file.name;drawEditor();
 }
-function recordSubmit(form){
+async function recordSubmit(form){
  if(!editor||editor.saving)return;
  captureEditorDraft();
- const e=editor;const d=e.draft;
- const amount=Math.round(Number(d.amount)*100);
- const item={id:e.id||newTransactionId(),amount,date:d.date,category:d.category,type:d.type,merchant:d.merchant.trim(),note:d.note.trim()};
- if(!validTransaction(item)){
-  document.querySelector('#save-error').textContent='请检查金额、日期和分类。';return;
+ const e=editor,d=e.draft;
+ const item={amount:Math.round(Number(d.amount)*100),date:d.date,category:d.category,type:d.type,merchant:d.merchant.trim(),note:d.note.trim()};
+ if(!validTransaction(item)){document.querySelector('#save-error').textContent='请检查金额、日期和分类。';return;}
+ e.saving=true;drawEditor();
+ try{
+  const saved=fromApi(await api('/api/transactions',{method:'POST',body:JSON.stringify(toApi(item))}));
+  if(editor===e)dialog.close();
+  state.month=saved.date.slice(0,7);state.filters={category:'all',type:'all',query:''};state.justSaved=saved.id;
+  state.page=e.origin==='home'?'home':'transactions';
+  await refreshAfterWrite([state.month],'已保存 1 笔流水');
+ }catch(error){
+  e.saving=false;
+  if(editor===e&&dialog.open){drawEditor();document.querySelector('#save-error').textContent=error.message;}
+  else notify(error.message);
  }
- e.saving=true;
- const save=form.querySelector('button[type="submit"]');save.disabled=true;save.textContent='保存中…';
- setTimeout(()=>{
-  if(editor!==e||!dialog.open)return;
-  const transactions=e.id?state.ledger.transactions.map(old=>old.id===e.id?item:old):[item,...state.ledger.transactions];
-  const result=persist({...state.ledger,transactions});
-  if(!result){e.saving=false;drawEditor();document.querySelector('#save-error').textContent='浏览器存储空间不足。表单仍在，可以重试。';return;}
-  refreshAnswers();
-  state.month=item.date.slice(0,7);state.filters={category:'all',type:'all',query:''};
-  state.justSaved=item.id;
-  dialog.close();
-  const onHome=e.origin==='home'&&(state.month!==baseMonth||item.date===anchorDate);
-  navigate(onHome?'home':'transactions');
-  const cap=item.type==='expense'?budgetUsage(item.category):null;
-  const overage=cap?.remaining<0?' · '+label(item.category)+'预算已超出 '+money(-cap.remaining):'';
-  persistNotice(result,(e.id?'流水已更新':'已保存 1 笔流水')+overage);
-  setTimeout(()=>{
-   if(state.justSaved!==item.id)return;
-   state.justSaved=null;
-   view.querySelector('.just-saved')?.classList.remove('just-saved');
-  },2200);
- },190);
 }
 function refreshAnswers(){
- for(const entry of state.messages){
-  if(entry.result&&entry.result.kind!=='failed')entry.result=queryLedger(entry.question,entry.month||state.month);
+ const entries=[...state.messages];
+ if(state.homeChat.mode==='query')entries.push(state.homeChat);
+ for(const entry of entries){
+  if(!entry.result||entry.result.kind==='failed')continue;
+  if(isBudgetQuestion(entry.question)){
+   const month=entry.result.month||resolveMonth(entry.question,entry.month);
+   entry.result=queryBudget(entry.question,month);
+  }else entry.stale=true;
  }
 }
 function detail(id,confirming=false){
@@ -719,40 +765,45 @@ function detail(id,confirming=false){
  <div class="details-list micro"><div><span>日期</span><span>${escape(item.date)}</span></div><div><span>分类</span><span>${label(item.category)}</span></div>${item.note?`<div><span>备注</span><span>${escape(item.note)}</span></div>`:''}</div>
  ${confirming?'<p class="form-message">删除后，统计和预算进度也会更新。</p>':''}
  <div class="form-actions">${confirming?button('detail','返回','right','plain',`data-id="${escape(id)}"`):button('confirm-delete','删除','trash','secondary',`data-id="${escape(id)}"`)}
- ${button(confirming?'delete':'edit',confirming?'确认删除':'编辑',confirming?'trash':'edit','primary',`data-id="${escape(id)}"`)}</div>`);
+ ${confirming?button('delete','确认删除','trash','primary',`data-id="${escape(id)}"`):''}</div>`);
 }
-function deleteRecord(id){
- const result=persist({...state.ledger,transactions:state.ledger.transactions.filter(item=>item.id!==id)});
- if(!result){notify('删除失败，请重试。');return;}
- refreshAnswers();dialog.close();render();persistNotice(result,'流水已删除');
+const deletingRecords=new Set();
+async function deleteRecord(id){
+ if(deletingRecords.has(id)||!/^\d+$/.test(id))return;
+ const item=state.ledger.transactions.find(row=>row.id===id);
+ if(!item)return;
+ deletingRecords.add(id);
+ try{
+  await api('/api/transactions/'+Number(id),{method:'DELETE'});
+  dialog.close();await refreshAfterWrite([item.date.slice(0,7)],'流水已删除');
+ }catch(error){notify(error.message);}
+ finally{deletingRecords.delete(id);}
 }
-function budgetEditor(category){
- const existing=category?budgetUsage(category)?.budget:null;
+function budgetEditor(category='all'){
+ const existing=state.ledger.budgets.find(item=>item.month===state.month&&item.category===category);
  showDialog('设置月度预算',`<form id="budget-form"><p class="muted">${monthLabel(state.month)} · 使用达到 80% 时提示接近上限。</p><div class="field-grid">
- <label class="field-label">范围<select name="category" id="budget-category">${filterOptions([['all','月度总预算'],...Object.keys(categories).map(cat=>[cat,label(cat)])],category||'all')}</select></label>
- <label class="field-label">限额（¥）<input type="number" min=".01" max="9999999.99" step=".01" inputmode="decimal" name="amount" required value="${existing?(existing.amount/100).toFixed(2):''}"></label></div>
+ <label class="field-label">范围<select name="category" id="budget-category">${filterOptions([['all','月度总预算'],...Object.keys(categories).map(cat=>[cat,label(cat)])],category)}</select></label>
+ <label class="field-label">限额（¥）<input type="number" min="0" max="9999999.99" step=".01" inputmode="decimal" name="amount" required value="${existing?(existing.amount/100).toFixed(2):''}"></label></div>
  <p class="form-message" id="budget-error" role="alert"></p><div class="form-actions">${button('close-dialog','取消','close','plain')}<button class="primary" type="submit">保存预算</button></div></form>`);
 }
-function budgetSubmit(form){
- const data=new FormData(form);const category=String(data.get('category'));const amount=Math.round(Number(data.get('amount'))*100);
- const budget={month:state.month,category,amount};
- if(!validBudget(budget)){
-  document.querySelector('#budget-error').textContent='请检查预算范围与金额。';return;
- }
- const budgets=[...state.ledger.budgets.filter(item=>item.month!==state.month||item.category!==category),budget];
- const result=persist({...state.ledger,budgets});
- if(!result){document.querySelector('#budget-error').textContent='保存失败，请重试。';return;}
- dialog.close();render();persistNotice(result,'预算已保存');
+let savingBudget=false;
+async function budgetSubmit(form){
+ if(savingBudget)return;
+ const data=new FormData(form),category=String(data.get('category'));
+ const budget={month:state.month,category,amount:Math.round(Number(data.get('amount'))*100)};
+ if(!validBudget(budget)){document.querySelector('#budget-error').textContent='请检查预算范围与金额。';return;}
+ savingBudget=true;form.querySelector('button[type="submit"]').disabled=true;
+ try{
+  await api('/api/budget',{method:'PUT',body:JSON.stringify({...budget,category:category==='all'?'all':categories[category].label})});
+  if(form.isConnected)dialog.close();
+  await refreshAfterWrite([budget.month],'预算已保存');
+ }catch(error){
+  if(form.isConnected){form.querySelector('#budget-error').textContent=error.message;form.querySelector('button[type="submit"]').disabled=false;}
+  else notify(error.message);
+ }finally{savingBudget=false;}
 }
-function settings(confirming=false){
- showDialog(confirming?'重置示例账本？':'账本设置',`<p class="muted">${confirming?'重置会清除当前浏览器里对示例账本的修改。':'当前使用人民币（CNY）。新增流水和预算保存在本浏览器。'}</p>
- <div class="form-actions">${button('close-dialog','关闭','close','plain')}${button(confirming?'reset-demo':'confirm-reset',confirming?'确认重置':'重置示例账本','wallet','secondary')}</div>`);
-}
-function resetDemo(){
- const result=persist(exampleLedger());
- if(!result){notify('重置失败，请重试。');return;}
- state.month=baseMonth;state.filters={category:'all',type:'all',query:''};state.messages=[];state.homeChat={text:'',mode:'input'};
- dialog.close();navigate('home');persistNotice(result,'示例账本已重置');
+function settings(){
+ showDialog('账本设置',`<p class="muted">当前使用人民币（CNY）。流水和预算由服务器保存，刷新页面会重新读取。图片仅在本地预览。</p><div class="form-actions">${button('refresh-data','重新读取账本','next','secondary')}${button('close-dialog','关闭','close','plain')}</div>`);
 }
 const actions={
  add:()=>openEditor(),
@@ -761,17 +812,17 @@ const actions={
  'home-ask-example':()=>fillHomeChat('这月餐饮花了多少？'),
  'home-receipt':()=>openEditor(null,'image'),
  'home-manual':()=>openEditor(null,'manual'),
- 'home-edit-text':()=>{state.homeChat.mode='input';renderHomeChat();focusHomeChat();},
+ 'home-edit-text':()=>{if(!state.homeChat.saving){state.homeChat.mode='input';renderHomeChat();focusHomeChat();}},
  'home-saved':()=>{const saved=state.homeChat.saved;state.month=saved.month;state.filters={category:'all',type:'all',query:'',ids:saved.ids};navigate('transactions');},
  'close-dialog':()=>dialog.close(),
  'open-budget':()=>navigate('budget'),
- 'open-answer-budget':el=>{state.month=el.dataset.month;navigate('budget');},
+ 'open-answer-budget':async el=>{if(await setMonth(el.dataset.month))navigate('budget');},
  'budget-edit':el=>budgetEditor(el.dataset.category),
  'shake-sticker':shakeSticker,
  settings:()=>settings(),
- 'confirm-reset':()=>settings(true),
- 'reset-demo':resetDemo,
- 'trend-month':el=>{setMonth(el.dataset.month);document.querySelector('.bar.highlight')?.focus({preventScroll:true});},
+ 'retry-load':boot,
+ 'refresh-data':()=>refreshAfterWrite([state.month],'账本已刷新'),
+ 'trend-month':async el=>{if(await setMonth(el.dataset.month))document.querySelector('.bar.highlight')?.focus({preventScroll:true});},
  'trend-mode':setTrendMode,
  'all-transactions':()=>openCategory('all',state.month,'all'),
  category:el=>openCategory(el.dataset.category),
@@ -780,7 +831,6 @@ const actions={
  detail:el=>detail(el.dataset.id),
  'confirm-delete':el=>detail(el.dataset.id,true),
  delete:el=>deleteRecord(el.dataset.id),
- edit:el=>{const item=state.ledger.transactions.find(record=>record.id===el.dataset.id);if(item)openEditor(item);},
  'entry-tab':el=>switchEntry(el.dataset.mode),
  'sample-text':()=>{editor.text='今天午饭 25 元';document.querySelector('#entry-text').value=editor.text;document.querySelector('#entry-text').focus();},
  'sample-receipt':()=>{captureEditorDraft();releaseReceipt();editor.exampleImage=true;editor.imageError='';editor.note='';drawEditor();},
@@ -791,19 +841,20 @@ const actions={
 document.addEventListener('click',event=>{
  const el=event.target.closest('button[data-action],button[data-page]');
  if(!el||el.disabled)return;
+ if(!state.ready&&el.dataset.action&&!['retry-load','settings','close-dialog'].includes(el.dataset.action))return;
  if(el.dataset.page)navigate(el.dataset.page);
  else actions[el.dataset.action]?.(el);
 });
 document.addEventListener('change',event=>{
  const el=event.target;
- if(el.id==='period'){setMonth(el.value);document.querySelector('#period')?.focus();}
+ if(el.id==='period')setMonth(el.value).then(()=>document.querySelector('#period')?.focus());
  if(el.id==='category-filter'||el.id==='type-filter'){
   state.filters[el.id==='category-filter'?'category':'type']=el.value;
   document.querySelector('#results').innerHTML=transactionResults();
  }
  if(el.id==='receipt-file')setReceipt(el.files[0]);
  if(el.id==='budget-category'){
-  const current=budgetUsage(el.value)?.budget;
+  const current=state.ledger.budgets.find(item=>item.month===state.month&&item.category===el.value);
   el.form.elements.amount.value=current?(current.amount/100).toFixed(2):'';
  }
 });
@@ -860,7 +911,7 @@ function homeChatContent(){
  const busy=chat.mode==='thinking';
  const query=chat.mode==='query'?`<div class="home-chat-reply" tabindex="-1" aria-live="polite">
   <p class="home-chat-question">${escape(chat.question)}</p>
-  ${answerCard({question:chat.question,result:queryLedger(chat.question,chat.month)})}
+  ${answerCard(chat)}
  </div>`:'';
  const saved=chat.mode==='saved'?homeSavedCard(chat.saved):'';
  return `${query}${saved}
@@ -881,8 +932,8 @@ function homeChatContent(){
 }
 
 function homeDraftCard(chat){
- const drafts=chat.drafts.map((item,index)=>`<fieldset class="home-draft-row">
-  <legend>第 ${index+1} 笔</legend>
+ const drafts=chat.drafts.map((item,index)=>`<fieldset class="home-draft-row" ${chat.saving?'disabled':''}>
+  <legend>第 ${(chat.completed||0)+index+1} 笔</legend>${item.checks?.length?`<p class="micro">请核对：${escape(item.checks.join('、'))}。</p>`:''}
   <label>名称<input name="merchant" maxlength="70" value="${escape(item.merchant)}" placeholder="选填"></label>
   <label>金额（¥）<input name="amount" type="number" inputmode="decimal" required step=".01" min=".01" max="9999999.99" value="${escape(item.amount)}"></label>
   <label>收支<select name="type">${filterOptions([['expense','支出'],['income','收入']],item.type)}</select></label>
@@ -894,10 +945,10 @@ function homeDraftCard(chat){
   <p class="home-chat-question">${escape(chat.text)}</p>
   ${chat.drafts.some(item=>!item.amount||!item.category)?'<p class="micro">请补全未识别的金额或分类。</p>':''}
   ${drafts}
-  <p id="home-draft-error" class="form-message" role="alert"></p>
+  <p id="home-draft-error" class="form-message" role="alert">${escape(chat.error||'')}</p>
   <div class="home-chat-toolbar">
-   <button class="plain" type="button" data-action="home-edit-text">返回修改原句</button>
-   <button class="primary" type="submit">${icon('check',16)} 确认记入 ${chat.drafts.length} 笔</button>
+   <button class="plain" type="button" data-action="home-edit-text" ${chat.saving?'disabled':''}>返回修改原句</button>
+   <button class="primary" type="submit" ${chat.saving?'disabled':''}>${icon('check',16)} ${chat.saving?'正在保存…':'确认记入 '+chat.drafts.length+' 笔'}</button>
   </div>
  </form>`;
 }
@@ -905,14 +956,14 @@ function homeDraftCard(chat){
 function homeSavedCard(saved){
  const changes=saved.changes.map(({category,month,previous,current})=>{
   const name=category==='all'?'总预算':label(category)+'预算';
-  const scope=month===baseMonth?'本月':monthLabel(month);
+  const scope=month===thisMonth()?'本月':monthLabel(month);
   const impact=current.remaining<0?'已超出 '+money(-current.remaining):'还剩 '+money(current.remaining);
   const basis='已用 '+money(previous.spent)+' → '+money(current.spent)+' / '+money(current.budget.amount);
   return `<div class="home-budget-change"><strong class="${current.remaining<0?'danger':''}">${scope}${name}${impact}</strong><small>${basis}</small></div>`;
  }).join('');
  return `<section class="home-chat-saved" aria-label="保存结果">
   <h3>${icon('check',17)} 已记入 ${saved.ids.length} 笔</h3>
-  ${saved.inMemory?'<p class="micro">当前浏览器无法持久保存，本次记录保留在当前页面。</p>':''}
+  ${saved.refreshError?`<p class="micro">已写入服务器，重新读取失败：${escape(saved.refreshError)}</p>${button('refresh-data','重新读取','next','plain')}`:''}
   ${changes||'<p class="micro">这次记账没有改变已设置的支出预算。</p>'}
   ${button('home-saved','查看这 '+saved.ids.length+' 笔流水','next','plain')}
  </section>`;
@@ -952,54 +1003,43 @@ function fillHomeChat(message){
  focusHomeChat();
 }
 
-function submitHomeChat(message){
+async function submitHomeChat(message){
  const clean=message.trim();
- if(!clean||state.homeChat.mode==='thinking')return;
+ if(!clean||state.homeChat.mode==='thinking'||state.homeChat.saving)return;
  const request={text:clean,mode:'thinking',month:state.month};
- state.homeChat=request;
- renderHomeChat();
- setTimeout(()=>{
-  if(state.homeChat!==request)return;
-  state.homeChat=resolveHomeChat(request);
-  if(state.page!=='home')return;
-  renderHomeChat();
-  if(!dialog.open)document.querySelector('.home-chat-reply, #home-draft-title')?.focus();
- },aiResponseDelay);
-}
-
-function resolveHomeChat({text:clean,month}){
- if(/多少|几笔|哪[些类个项]|最多|排行|明细|查[查一下]?|统计|有没有|吗|[？?]|为什么|分析|调整|预算/.test(clean)){
-  return {text:'',mode:'query',question:clean,month};
+ state.homeChat=request;renderHomeChat();
+ try{
+  const result=await resolveHomeChat(request);
+  if(state.homeChat===request)state.homeChat=result;
+ }catch(error){
+  if(state.homeChat===request)state.homeChat={...request,mode:'query',question:clean,result:{kind:'failed',text:error.message}};
+ }finally{
+  if(state.page==='home'){
+   renderHomeChat();
+   if(!dialog.open)document.querySelector('.home-chat-reply, #home-draft-title')?.focus();
+  }
  }
- const drafts=clean.split(/[，,、；;\n]+/).map(part=>part.trim()).filter(Boolean).map(part=>{
-  const parsed=textDraft(part,month);
-  const multiple=part.replace(/\b20\d{2}-\d{2}-\d{2}\b/g,'').match(/\d+(?:\.\d+)?/g)?.length>1;
-  const merchant=part
-   .replace(/\b20\d{2}-\d{2}-\d{2}\b|今天|昨天|前天/g,'')
-   .replace(/[¥￥]?\s*\d+(?:\.\d+)?\s*(?:元|块)?/g,'')
-   .replace(/^(?:记(?:一下|一笔)?|帮我记(?:一下|一笔)?|花了|买了)\s*/,'')
-   .trim().slice(0,70);
-  return {...parsed,merchant,amount:multiple?'':parsed.amount};
- });
- return drafts.length?{text:clean,mode:'draft',drafts}:{text:clean,mode:'input'};
 }
-
-function saveHomeDraft(form){
+async function resolveHomeChat({text:clean,month}){
+ if(/多少|几笔|哪[些类个项]|最多|排行|明细|查[查一下]?|统计|有没有|吗|[？?]|为什么|分析|调整|预算|限额|超支/.test(clean)){
+  return {text:'',mode:'query',question:clean,month,result:await requestAnswer(clean,month)};
+ }
+ const drafts=[];
+ for(const part of clean.split(/[，,、；;\n]+/).map(value=>value.trim()).filter(Boolean))drafts.push(await parseDraft(part));
+ return drafts.length?{text:clean,mode:'draft',drafts,completed:0,savedIds:[]}:{text:clean,mode:'input'};
+}
+async function saveHomeDraft(form){
+ const chat=state.homeChat;
+ if(chat.mode!=='draft'||chat.saving)return;
  const fields=Array.from(form.querySelectorAll('fieldset'));
  const items=fields.map((row,index)=>{
-  const original=state.homeChat.drafts[index];
   const field=name=>row.querySelector('[name="'+name+'"]').value;
-  return {
-   id:newTransactionId(), amount:Math.round(Number(field('amount'))*100),
-   category:field('category'), type:field('type'), date:field('date'),
-   merchant:field('merchant').trim(), note:original.note
-  };
+  return {amount:Math.round(Number(field('amount'))*100),category:field('category'),type:field('type'),date:field('date'),merchant:field('merchant').trim(),note:chat.drafts[index].note};
  });
- if(!items.length||items.some(item=>!validTransaction(item))){
-  document.querySelector('#home-draft-error').textContent='请检查每笔的金额、日期和分类。';
-  return;
- }
- const before=new Map();
+ if(!items.length||items.some(item=>!validTransaction(item))){document.querySelector('#home-draft-error').textContent='请检查每笔的金额、日期和分类。';return;}
+ chat.drafts=items.map((item,index)=>({...chat.drafts[index],...item,amount:(item.amount/100).toFixed(2)}));
+ chat.saving=true;chat.error='';renderHomeChat();
+ const saved=[],before=new Map();
  for(const item of items.filter(item=>item.type==='expense')){
   const month=item.date.slice(0,7);
   for(const category of ['all',item.category]){
@@ -1007,24 +1047,31 @@ function saveHomeDraft(form){
    if(previous)before.set(month+category,{month,category,previous});
   }
  }
- const result=persist({...state.ledger,transactions:[...items,...state.ledger.transactions]});
- if(!result){
-  document.querySelector('#home-draft-error').textContent='存储空间不足，草稿仍保留，可以重试。';
-  return;
+ let failure='';
+ for(const item of items){
+  try{saved.push(fromApi(await api('/api/transactions',{method:'POST',body:JSON.stringify(toApi(item))})));}
+  catch(error){failure=error.message;break;}
  }
- const changes=[...before.values()].map(item=>({...item,current:budgetUsage(item.category,item.month)}));
- refreshAnswers();
- state.homeChat={text:'',mode:'saved',saved:{ids:items.map(item=>item.id),changes,month:items[0].date.slice(0,7),inMemory:result==='memory'}};
- state.month=items[0].date.slice(0,7);
- state.filters={category:'all',type:'all',query:''};
- const firstId=items[0].id;
- state.justSaved=firstId;
- render();
- setTimeout(()=>{
-  if(state.justSaved===firstId){state.justSaved=null;view.querySelector('.just-saved')?.classList.remove('just-saved');}
- },2200);
- document.querySelector('[data-action="home-saved"]')?.focus({preventScroll:true});
- persistNotice(result,'已保存 '+items.length+' 笔流水');
+ const failedPosition=chat.completed+saved.length+1;
+ chat.completed+=saved.length;chat.savedIds.push(...saved.map(item=>item.id));
+ let refreshError='';
+ if(saved.length){
+  try{
+   for(const month of new Set(saved.map(item=>item.date.slice(0,7))))await refreshMonth(month);
+   refreshAnswers();
+  }catch(error){refreshError=error.message;}
+ }
+ chat.saving=false;
+ if(failure){
+  chat.drafts=chat.drafts.slice(saved.length);
+  chat.error='已保存 '+chat.completed+' 笔，第 '+failedPosition+' 笔失败，剩余 '+chat.drafts.length+' 笔未保存：'+failure+(refreshError?'；重新读取失败：'+refreshError:'');
+  renderHomeChat();notify(chat.error);return;
+ }
+ const changes=[...before.values()].map(item=>({...item,current:budgetUsage(item.category,item.month)})).filter(item=>item.current);
+ state.homeChat={text:'',mode:'saved',saved:{ids:chat.savedIds,changes,month:items[0].date.slice(0,7),refreshError}};
+ state.month=items[0].date.slice(0,7);state.filters={category:'all',type:'all',query:''};
+ state.justSaved=chat.savedIds[0];render();
+ notify('已保存 '+chat.completed+' 笔流水'+(refreshError?'；重新读取失败：'+refreshError:''));
 }
 
 const amountMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -1317,7 +1364,7 @@ const syncThinkingIcons = (() => {
 
 syncThinkingIcons(document.querySelector('#brand'));
 if(Object.hasOwn(navItems,location.hash.slice(1)))state.page=location.hash.slice(1);
-render();
+boot();
 
 (() => {
  const cursor = document.getElementById('finora-pointer');
