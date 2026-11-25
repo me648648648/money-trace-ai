@@ -1,10 +1,16 @@
-"""AI 解析兜底（骨架，待 AI 负责人实现）。
+"""AI 能力（骨架，待 AI 负责人实现）。
+
+三条入口，全部由 main.py 的薄路由调用，AI 负责人只改这个文件：
+    maybe_fill()       /api/parse      解析兜底，规则认不出时补字段
+    ocr_receipt()      /api/receipt    小票图片 → 一笔流水
+    compose_answer()   /api/query      把 db 算好的数字写成一句中文
 
 边界（实现时不要突破）：
-    - 只在 parser.parse_text 认不出来时补字段，不替代 parser；
     - 不写进 parser.py，parser 是纯函数，不碰网络；
-    - 任何失败都原样返回 parser 的结果，/api/parse 必须仍是 200；
-    - 返回形状与契约 v2 完全一致，understood 五个键一个都不能少。
+    - 任何失败都不能把主流程带崩：maybe_fill 原样返回、compose_answer 返回
+      规则答案、ocr_receipt 抛 AIError 由路由翻译成错误响应；
+    - 返回形状与契约 v2 完全一致，understood 五个键一个都不能少；
+    - 数字一律由规则或 db 计算，模型不参与算术。
 
 TODO(AI 负责人)：把标了 TODO 的部分补上，并把 maybe_fill 里的
 `return parsed` 换成真实流程。其它函数补好之前，服务行为保持不变。
@@ -85,6 +91,21 @@ def make_client(config: AIConfig):
     raise NotImplementedError("make_client 还没实现")
 
 
+# ---------------------------------------------------------------- 小票识别
+
+def ocr_receipt(image_bytes: bytes, mime: str = "") -> dict:
+    """TODO：识别一张小票，返回与 parser.parse_text 同形状的一笔流水。
+
+    模型必须是视觉模型（云端用视觉版，本地 Ollama 用 llava / qwen2.5-vl 之类）。
+    规则：
+        - 一期只返回一笔：取小票合计金额，配日期、商户、类别；
+        - amount 是整数分，禁止用 float 元；
+        - 认不出的字段用 None / ""，understood 对应位置 False；
+        - 失败统一 raise AIError，由路由翻译成 500。
+    """
+    raise NotImplementedError("ocr_receipt 还没实现")
+
+
 # ---------------------------------------------------------------- 触发与合并
 
 def needs_ai(parsed: dict, trigger: str = "strict"):
@@ -112,6 +133,25 @@ def merge_suggestion(text, parsed, suggestion, *, today, categories, income,
         - merchant 必须是 text 的子串。
     """
     raise NotImplementedError("merge_suggestion 还没实现")
+
+
+# ---------------------------------------------------------------- 查账回答
+
+def compose_answer(question, parsed, data, fallback):
+    """TODO：把查账结果写成一两句自然中文，失败必须返回 fallback。
+
+    参数：
+        question  用户原问题
+        parsed    parser.parse_question 的返回值（understood 是置信标记）
+        data      db 算好的数字，如 {"amount": 12000, "count": 8}
+        fallback  规则层已经拼好的 answer
+
+    规则：
+        - 数字只能来自 data，禁止模型自己算；
+        - 任何异常都 return fallback；
+        - 返回纯字符串，控制在 120 字以内。
+    """
+    return fallback
 
 
 # ---------------------------------------------------------------- 入口

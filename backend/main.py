@@ -19,13 +19,13 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import db, parser
-from backend.ai import maybe_fill
+from backend.ai import AIError, compose_answer, maybe_fill, ocr_receipt
 
 APP_DIR = Path(__file__).resolve().parent.parent
 FRONTEND = APP_DIR / "frontend" / "finora-ai"
@@ -152,6 +152,30 @@ def api_parse(payload: dict) -> dict:
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
     return maybe_fill(text.strip(), parser.parse_text(text.strip()))
+
+
+MAX_RECEIPT_BYTES = 5 * 1024 * 1024  # 小票图片上限 5MB
+
+
+@app.post("/api/receipt")
+def api_receipt(file: UploadFile = File(...)) -> dict:
+    """小票识别（骨架）。收图片，交给 ai.ocr_receipt。
+
+    一期只返回一笔，形状与 /api/parse 相同。AI 负责人实现前返回 501。
+    """
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="只接受图片文件")
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    if len(data) > MAX_RECEIPT_BYTES:
+        raise HTTPException(status_code=400, detail="图片不能超过 5MB")
+    try:
+        return ocr_receipt(data, mime=file.content_type or "")
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="小票识别尚未实现")
+    except AIError as exc:
+        raise HTTPException(status_code=500, detail=f"小票识别失败：{exc}")
 
 
 @app.get("/api/transactions")
@@ -315,7 +339,7 @@ def api_query(payload: dict) -> dict:
             answer = f"{day_from} 到 {day_to}，{label}共 {_yuan(amount)} 元，{count} 笔。"
 
     return {
-        "answer": answer,
+        "answer": compose_answer(question, parsed, data, answer),
         "understood": {"from": day_from, "to": day_to, "category": category,
                        "type": type_, "metric": metric},
         "data": data,

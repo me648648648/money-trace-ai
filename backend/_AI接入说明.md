@@ -10,10 +10,15 @@
 
 ## 1. 范围
 
-只做一件事：`parser.parse_text` 认不出来时，问一次大模型，补上字段。
+三条入口，路由都在 `main.py`（组长维护），AI 负责人只改 `backend/ai.py`：
 
-不做问答生成、不做分析总结、不做单独的类别纠错接口。
-`/api/query` 本轮不动。返回形状必须和契约 v2 完全一致，所以契约不用升 v3。
+- 解析兜底：`/api/parse`，`parser.parse_text` 认不出来时补字段；
+- 小票识别：`POST /api/receipt`，收一张图片，返回一笔流水；
+- 查账回答：`/api/query`，数字仍由 db 算，模型只把结果写成一两句中文。
+
+不做多轮对话、不做分析总结、不做单独的类别纠错接口。
+新增了 `/api/receipt` 和 `/api/query` 的 answer 生成，契约需要组长补一段 v3
+（把新路由和 501 写进去）；`/api/parse` 的返回形状没变。
 
 ---
 
@@ -27,9 +32,13 @@
 | 提示词 | `SYSTEM_TEMPLATE` 占位 | 提示词、`build_messages()` |
 | 调模型 | `AIError`、`OpenAICompatClient` 签名 | `chat()`、`make_client()` |
 | 触发与合并 | `needs_ai()`、`merge_suggestion()` 签名 + 约束注释 | 两个函数的实现 |
+| 小票识别 | `ocr_receipt()` 签名 | 实现（视觉模型） |
+| 查账回答 | `compose_answer()` 空实现 | 实现（失败必须返回规则答案） |
 | 入口 | `maybe_fill()` 空壳 | 换成实现，保留 fail-open |
 
-`maybe_fill()` 现在是 `return parsed`，所以骨架合进 main 后行为完全不变。
+`maybe_fill()` 现在是 `return parsed`、`compose_answer()` 现在是 `return fallback`，
+`ocr_receipt()` 抛 `NotImplementedError`（路由翻译成 501），所以骨架合进 main 后
+线上行为完全不变。
 AI 只有一个人负责，代码就一个文件，免得为改一句提示词在几个文件之间跳。
 `main.py` 的 import 仍是 `from backend.ai import maybe_fill`，不受影响。
 不要把 AI 逻辑写进 `parser.py`，parser 是纯函数，不碰网络。
@@ -127,15 +136,24 @@ AI 只有一个人负责，代码就一个文件，免得为改一句提示词�
 `backend/main.py` 顶部：
 
 ```python
-from backend import db, parser
-from backend.ai import maybe_fill      # 新增
+from backend.ai import AIError, compose_answer, maybe_fill, ocr_receipt
 ```
 
-`api_parse` 返回改一行：
+三处接线（已经加好，组员不用动）：
 
 ```python
-    return maybe_fill(text.strip(), parser.parse_text(text.strip()))
+# /api/parse
+return maybe_fill(text.strip(), parser.parse_text(text.strip()))
+
+# /api/query 的返回里
+"answer": compose_answer(question, parsed, data, answer),
+
+# /api/receipt 新路由
+return ocr_receipt(data, mime=file.content_type or "")
 ```
+
+小票路由的边界：只收 `image/*`、非空、≤5MB；`ocr_receipt` 没实现时返回 501，
+模型报错返回 500。`requirements.txt` 已加 `python-multipart`，FastAPI 收文件必须有它。
 
 ---
 
@@ -155,6 +173,9 @@ DoD：
 - `_check_parser.py` 仍 16/16、接口冒烟仍 128/128（两个脚本在组长本地，找组长要）；
 - `AI_ENABLED=0` 时 `/api/parse` 与合并前逐字段一致；
 - 模型超时、401、返回非 JSON 时，`/api/parse` 仍 200 且形状不变；
+- 模型失败时 `/api/query` 的 `answer` 与规则答案逐字一致；
+- `POST /api/receipt` 非图片 400、未实现 501、实现后 200 且形状同 `/api/parse`；
+- 视觉模型可用：云端用视觉版，本地 Ollama 用 llava / qwen2.5-vl 之类；
 - `打车 23块` 在 strict 下不调模型；
 - 仓库里搜不到 key，`.env` 在 `.gitignore`；
 - PR 描述贴验收输出，key 打码。
@@ -170,6 +191,9 @@ DoD：
 3. PR base = `main`，描述首行写「已 merge main，当前 main HEAD = xxxx」；
 4. 组长审、组长合，作者不合自己的 PR。
 
+小票识别的前端图片上传是 A 的文件，AI 负责人只交付后端 `ocr_receipt()`；
+查账回答的 `answer` 字段形状没变，前端不用改。
+
 ---
 
 ## 8. 已知边界
@@ -177,4 +201,6 @@ DoD：
 - `麦当劳 三十`（中文数字不带「块/元」）金额仍认不出：换算是规则层的事，
   不要为了让 AI 补上而在这一层绕过去。
 - `满30减5` 仍取最早的金额，`3块5` 仍只算 3000，都是 parser 既有行为。
+- 小票一期只返回一笔，因为 parse 的形状就是一筆；多商品拆分不在本轮。
+- 图片上限 5MB，超了直接 400；视觉模型不支持图片时 `ocr_receipt` 会报错。
 - 不做缓存。同一句话重复解析会重复调模型，量小先不做。
