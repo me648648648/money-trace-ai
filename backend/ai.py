@@ -271,7 +271,15 @@ def build_messages(text: str, today: str):
 # ---------------------------------------------------------------- 调模型
 
 class AIError(Exception):
-    """AI 调用链上的失败。maybe_fill / compose_answer 负责捕获它。"""
+    """AI 调用链上的失败。maybe_fill / compose_answer 负责捕获它。
+
+    retryable=True 只给超时、网络错误和 5xx 用；401/403 这类重试也没用的
+    错误不重试，避免白白多打一次接口。
+    """
+
+    def __init__(self, message="", *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = bool(retryable)
 
 
 class StubClient:
@@ -318,8 +326,9 @@ class OpenAICompatClient:
                 return self._post(payload)
             except AIError as exc:
                 last_error = exc
-                if attempt < self.retries:
-                    time.sleep(0.15)
+                if attempt >= self.retries or not exc.retryable:
+                    break
+                time.sleep(0.15)
         raise last_error or AIError("调用模型失败")
 
     def _post(self, payload: dict) -> str:
@@ -345,9 +354,15 @@ class OpenAICompatClient:
                 detail = exc.read().decode("utf-8", "replace")[:300]
             except Exception:
                 pass
-            raise AIError(f"模型接口返回 HTTP {exc.code}" + (f"：{detail}" if detail else "")) from None
+            # 只有 5xx 和 408 值得重试；401/403/404/429 重试也没用
+            retryable = exc.code >= 500 or exc.code == 408
+            raise AIError(
+                f"模型接口返回 HTTP {exc.code}" + (f"：{detail}" if detail else ""),
+                retryable=retryable,
+            ) from None
         except (urlerror.URLError, TimeoutError, OSError) as exc:
-            raise AIError(f"连不上模型接口：{exc}") from None
+            # 超时 / 连不上，属于可以再试一次的网络错误
+            raise AIError(f"连不上模型接口：{exc}", retryable=True) from None
 
         try:
             body = json.loads(raw)
@@ -694,13 +709,22 @@ def _cents_from_text(value):
     return None
 
 
+def _item_entries(obj, limit: int = 8) -> list:
+    """模型可能把 items 返回成对象/字符串，只认 list，其它一律当空列表。"""
+    if not isinstance(obj, dict):
+        return []
+    items = obj.get("items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items[:limit] if isinstance(item, dict)]
+
+
 def _items_text(obj: dict) -> str:
-    names = []
-    for item in (obj.get("items") or [])[:8]:
-        if isinstance(item, dict) and isinstance(item.get("name"), str):
-            name = item["name"].strip()
-            if name:
-                names.append(name)
+    names = [
+        item["name"].strip()
+        for item in _item_entries(obj)
+        if isinstance(item.get("name"), str) and item["name"].strip()
+    ]
     return " ".join(names)
 
 
@@ -737,11 +761,17 @@ def _receipt_to_parsed(obj: dict, today_d, source: str = "ai") -> dict:
     if isinstance(note, str) and note.strip():
         note_text = re.sub(r"\s+", " ", note.strip())[:120]
     else:
-        names = [item.get("name") for item in (obj.get("items") or [])[:3]
-                 if isinstance(item, dict) and isinstance(item.get("name"), str)]
-        note_text = ("小票：" + "、".join(n.strip() for n in names if n.strip()))[:120] \
-            if any(isinstance(n, str) and n.strip() for n in names) else \
-            (f"小票：{merchant}"[:120] if merchant else "小票识别")
+        names = [
+            item["name"].strip()
+            for item in _item_entries(obj, 3)
+            if isinstance(item.get("name"), str) and item["name"].strip()
+        ]
+        if names:
+            note_text = ("小票：" + "、".join(names))[:120]
+        elif merchant:
+            note_text = f"小票：{merchant}"[:120]
+        else:
+            note_text = "小票识别"
 
     return {
         "day": day,
@@ -836,7 +866,14 @@ def ocr_receipt(image_bytes: bytes, mime: str = "", *, today=None, config=None, 
     if not isinstance(suggestion, dict):
         raise AIError("模型返回的小票字段不是 JSON 对象")
 
-    parsed = _receipt_to_parsed(suggestion, today_d)
+    try:
+        parsed = _receipt_to_parsed(suggestion, today_d)
+    except AIError:
+        raise
+    except Exception as exc:
+        # 模型字段形状再离谱也要翻译成 AIError，路由才能给出人话，而不是裸 500
+        raise AIError(f"模型返回的小票字段无法解析：{exc}") from None
+
     error_hint = suggestion.get("error")
     usable = parsed["amount"] is not None or bool(parsed["merchant"])
     if config_value.debug:
