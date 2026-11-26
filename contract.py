@@ -1,9 +1,9 @@
 # =============================================================================
-# 【废弃声明 · 2026-11-18】
-# 本文件顶部的 v1 段是旧契约，只作历史对照，已经废弃，不要照着实现。
-# 现行契约是「契约 v2 · 2026-11-18」横幅以下的全部内容。
-# v1 与 v2 冲突时，一律以 v2 为准。
-# 特别提醒：v1 写「金额一律 float」，v2 已改为整数「分」。
+# 【废弃声明 · 2026-11-26】
+# 本文件顶部的 v1 段和中间的 v2 段都是旧契约，只作历史对照，不要照着实现。
+# 现行契约是文件末尾「契约 v3 · 2026-11-26」横幅以下的全部内容。
+# v1 / v2 与 v3 冲突时，一律以 v3 为准。
+# 特别提醒：v1 写「金额一律 float」，v2 起改为整数「分」，v3 继续沿用整数分。
 # =============================================================================
 
 """contract.py —— 接口契约（组长维护，谁都不准私自改）
@@ -311,4 +311,115 @@ list_budgets(month) -> list[dict]
        backend/parser.py   B
        frontend/           A
    谁都不许改别人的文件。这既是避免冲突，也是 review 的前提。
+"""
+
+# =============================================================================
+# 契约 v3 · 2026-11-26
+#
+# 本段取代 v2。v1 / v2 原文保留在上面只作历史对照，实际开发一律以 v3 为准。
+# v3 只加了两件 AI 相关的事，v2 的 11 条接口、字段形状、表结构、金额单位一个都没改：
+#   1. 新增第 12 条 POST /api/receipt（小票图片 → 一笔流水草稿）
+#   2. 第 8 条 /api/query 的 answer 允许由模型改写（数字仍来自规则层）
+# =============================================================================
+
+"""
+============ v3 一、口径补充 ============
+
+（v2 第一节全部继续有效，下面三条是新增总则）
+
+AI 是可选能力，默认关闭
+    AI_ENABLED=0 时三条 AI 入口的行为与 v2 完全一致：
+    /api/parse 原样返回 parser 的结果、/api/query 返回规则答案原文、
+    /api/receipt 返回 500（AI 未开启）。不用 AI 时不需要配任何变量。
+
+模型不参与算术
+    金额、笔数、日期区间只能来自 parser 或 db。模型只做两件事：
+    从一句话里补字段、把已经算好的结果写成一两句中文。
+    「模型自己算出来的数字」一律算 bug，不是特性。
+
+AI 不写库
+    AI 只产出草稿（parse 形状），写库仍然只走 POST /api/transactions。
+    小票识别同理：返回草稿，用户确认后前端再提交。
+
+
+============ v3 二、HTTP 接口 ============
+
+v2 的 11 条接口全部不变。第 8 条补充 answer 规则，并新增第 12 条。
+
+8. POST /api/query —— AI 查账（补充）
+   请求与响应形状和 v2 第 8 条完全一致，变的只是 answer 怎么来：
+
+   - answer 由 backend.ai.compose_answer(question, parsed, data, fallback) 生成；
+   - 数字护栏：改写后的回答里出现的数字，必须已经在规则答案 fallback 里出现过，
+     否则判为编造，整句退回 fallback；
+   - 超过 120 字、空字符串、模型超时、401、返回不是 JSON 等任何异常，
+     一律逐字返回 fallback，/api/query 仍然 200；
+   - AI_ENABLED=0 时与 v2 逐字一致。
+   understood 和 data 仍然由 parser / db 产出，模型不碰。
+
+12. POST /api/receipt —— 小票图片识别（新增）
+   请求：multipart/form-data，文件字段名固定为 file
+   校验顺序（前三条在路由层，返回 400）：
+     1. Content-Type 必须 image/*；
+     2. 文件内容不能为空；
+     3. 文件不能超过 5MB（5 * 1024 * 1024 字节）。
+   路由层通过后再按文件头（魔数）判真实格式，只认 PNG / JPEG / WebP，
+   不信浏览器声明的 Content-Type。
+   返回 200：与 POST /api/parse 完全相同的 7 个键，不多不少：
+     {"day": "YYYY-MM-DD", "amount": 整数分或 null, "type": "expense|income",
+      "category": "类别", "merchant": "", "note": "小票说明",
+      "understood": {"day": bool, "amount": bool, "type": bool,
+                     "category": bool, "merchant": bool}}
+   500 + {"detail": "人话"} 的四种情况：
+     - AI 未开启（AI_ENABLED=0）；
+     - 视觉模型没配置（缺 AI_VISION_* 且主配置没填）；
+     - 模型超时 / 报错 / 返回非 JSON；
+     - 图片里没有小票内容（合计金额和商户都认不出）。
+   一期只返回一笔（合计金额那一笔），多商品拆分不在本轮；返回的是草稿，
+   不写库，前端确认后走 POST /api/transactions。
+   响应里不允许出现 items 这类额外字段；要在 200 里多返回字段，必须先升 v4。
+
+
+============ v3 三、Python 函数 ============
+
+parser.py / db.py 的函数与表结构全部沿用 v2，不重复。新增一个模块：
+
+ai.py（AI 负责人，单文件，只有这个文件归 AI 负责人改）
+--------------------------------------------------------
+maybe_fill(text, parsed) -> dict
+    解析兜底。输入输出都是 parser.parse_text 的同形状 dict。
+    AI 关闭、未触发、模型失败时原样返回 parsed（fail-open），/api/parse 永远 200。
+
+ocr_receipt(image_bytes, mime) -> dict
+    小票图片 → 与 parse 同形状的一笔流水（7 键）。
+    失败统一 raise AIError，由 main.py 翻译成 500 + detail。
+    amount 必须是整数分，禁止 float 元。
+
+compose_answer(question, parsed, data, fallback) -> str
+    把规则答案改写成一两句中文。任何异常 return fallback。
+    返回纯字符串，不超过 120 字。
+
+内部约定（改 ai.py 的人自己守）：
+    - 不 import backend.db、不写库；数字只用传进来的 data / fallback；
+    - understood 为 true 的字段不覆盖；safe 策略下 AI 补了值也保持 false；
+    - key 只放环境变量或仓库根 .env，不进代码、不进日志、不进 PR。
+
+
+============ v3 四、改动规则 ============
+
+v2 第四节继续有效；其中第 3 条「契约改了就是 v3」由本节第 7 条取代，
+其余照旧。文件归属表更新为：
+
+       contract.py         组长
+       backend/main.py     组长
+       backend/ai.py       AI 负责人
+       backend/db.py       C
+       backend/parser.py   B
+       frontend/           A
+
+新增三条：
+5. main.py 的三处 AI 接线由组长维护，AI 负责人不改 main.py；
+6. ai.py 可以加可选调试参数（如 today / config / client），但必填参数和返回
+   形状不能变；要改必填参数，先升契约；
+7. 契约改了就是 v4，要重新广播，不许在 v3 上偷偷改细节。
 """
