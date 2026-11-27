@@ -541,6 +541,7 @@ function answerCard(entry,amountKey='home-answer-'+entry.question){
  const data=entry.result;
  if(!data)return '<section class="answer answer-loading" role="status">正在查找账本记录…</section>';
  if(data.kind==='failed')return `<section class="answer" role="alert"><p>${escape(data.text||'查账暂时失败。')}</p>${button('ask','重试','next','plain',`data-question="${escape(entry.question)}"`)}</section>`;
+ if(data.kind==='chat')return `<section class="answer"><p>${escape(data.text||chatReply(entry.question))}</p></section>`;
  if(data.kind==='budget'||data.kind==='adjust'){
   const rows=data.caps.map(({budget})=>budgetComparison(budget,data.month)).join('');
   return `<section class="answer"><div class="micro inline">${icon('budget',15)} ${monthLabel(data.month)}</div><h3>${escape(data.title)}</h3>
@@ -590,6 +591,21 @@ function resolveMonth(question,fallback=state.month){
  if(/本月|这个月|这月|最近\s*(30|三十)\s*天/.test(question))return thisMonth();
  return fallback;
 }
+const chatQueryPattern=/多少|几笔|哪[些类个项]|最多|排行|明细|统计|支出|收入|消费|账单|账本|流水|开支|开销|结余|余额|趋势|占比|对比|总结|情况|预算|限额|超支|分析|调整|花得|花销|花费|查/;
+const chatRecordPattern=/记一笔|记帐|记账|记下|花了|买了|付了|打车|吃饭|午饭|晚饭|早饭|奶茶|咖啡|外卖|地铁|公交|房租|水电|工资|收入|红包|\d/;
+function classifyChatInput(text){
+ if(chatQueryPattern.test(text))return 'query';
+ if(chatRecordPattern.test(text))return 'record';
+ return 'chat';
+}
+function chatReply(text){
+ const clean=text.trim();
+ if(/^(你好|您好|嗨|哈喽|hi|hello)[啊呀呢吧？?！!。,\s]*$/i.test(clean))return '你好呀，我是账本助手，只负责记账和查账：说「午饭 25」记一笔，或者问「这个月餐饮花了多少？」，也可以上传小票识别。';
+ if(/谢谢|感谢|辛苦/.test(clean))return '不客气～我只管账本相关的事，有记账或查账随时找我。';
+ if(/你是谁|你能做什么|你会什么|怎么用/.test(clean))return '我是 Finora 的账本助手，只能帮你记账、查账和识别小票，其它话题不聊。';
+ if(/在吗|在不在/.test(clean))return '在的。我只处理账本相关的问题，比如「午饭 25」或「这个月花了多少」。';
+ return '我只懂记账和查账哦～你可以说「午饭 25」记一笔，或者问「这个月餐饮花了多少？」，也可以上传小票识别；其它话题我帮不上忙。';
+}
 async function requestAnswer(question,month){
  if(isBudgetQuestion(question)){
   const target=resolveMonth(question,month);
@@ -620,8 +636,12 @@ async function ask(question){
  const entry={question:clean,month:state.month,result:null};
  state.messages.push(entry);state.thinking=true;
  if(state.page==='assistant')render();else navigate('assistant');
- try{entry.result=await requestAnswer(clean,entry.month);}
- catch(error){entry.result={kind:'failed',text:error.message};}
+ try{
+  const intent=classifyChatInput(clean);
+  entry.result=intent==='query'
+   ?await requestAnswer(clean,entry.month)
+   :{kind:'chat',text:intent==='record'?'这是 AI 查账页；要记账的话，用首页的 AI 记账助手，或者点右上角「记一笔」。':chatReply(clean)};
+ }catch(error){entry.result={kind:'failed',text:error.message};}
  finally{
   state.thinking=false;
   if(state.page==='assistant'){
@@ -773,7 +793,7 @@ function refreshAnswers(){
  const entries=[...state.messages];
  if(state.homeChat.mode==='query')entries.push(state.homeChat);
  for(const entry of entries){
-  if(!entry.result||entry.result.kind==='failed')continue;
+  if(!entry.result||entry.result.kind==='failed'||entry.result.kind==='chat')continue;
   if(isBudgetQuestion(entry.question)){
    const month=entry.result.month||resolveMonth(entry.question,entry.month);
    entry.result=queryBudget(entry.question,month);
@@ -826,7 +846,7 @@ async function budgetSubmit(form){
  }finally{savingBudget=false;}
 }
 function settings(){
- showDialog('账本设置',`<p class="muted">当前使用人民币（CNY）。流水和预算由服务器保存，刷新页面会重新读取。图片仅在本地预览。</p><div class="form-actions">${button('refresh-data','重新读取账本','next','secondary')}${button('close-dialog','关闭','close','plain')}</div>`);
+ showDialog('账本设置',`<p class="muted">当前使用人民币（CNY）。流水和预算由服务器保存，刷新页面会重新读取。小票图片会上传到本服务并可能交由识别模型处理，确认前不会写入账本。</p><p class="form-message" id="settings-status" role="status"></p><div class="form-actions">${button('refresh-data','重新读取账本','next','secondary')}${button('close-dialog','关闭','close','plain')}</div>`);
 }
 const actions={
  add:()=>openEditor(),
@@ -844,7 +864,21 @@ const actions={
  'shake-sticker':shakeSticker,
  settings:()=>settings(),
  'retry-load':boot,
- 'refresh-data':()=>refreshAfterWrite([state.month],'账本已刷新'),
+ 'refresh-data':async()=>{
+  const status=document.querySelector('#settings-status');
+  if(status)status.textContent='正在重新读取账本…';
+  try{
+   await refreshMonth(state.month);
+   refreshAnswers();
+   render();
+   const count=ledgerFor(state.month).length;
+   if(status)status.textContent='已重新读取 '+monthLabel(state.month)+'：'+count+' 笔流水。';
+   notify('账本已刷新');
+  }catch(error){
+   if(status)status.textContent='重新读取失败：'+error.message;
+   else notify('重新读取失败：'+error.message);
+  }
+ },
  'trend-month':async el=>{if(await setMonth(el.dataset.month))document.querySelector('.bar.highlight')?.focus({preventScroll:true});},
  'trend-mode':setTrendMode,
  'all-transactions':()=>openCategory('all',state.month,'all'),
@@ -935,10 +969,14 @@ function homeChatContent(){
   <p class="home-chat-question">${escape(chat.question)}</p>
   ${answerCard(chat)}
  </div>`:'';
+ const chatAnswer=chat.mode==='chat'?`<div class="home-chat-reply" tabindex="-1" aria-live="polite">
+  <p class="home-chat-question">${escape(chat.question)}</p>
+  <section class="answer"><p>${escape(chat.reply)}</p></section>
+ </div>`:'';
  const saved=chat.mode==='saved'?homeSavedCard(chat.saved):'';
- return `${query}${saved}
+ return `${query}${chatAnswer}${saved}
   <form id="home-chat-form" class="home-chat-composer" aria-busy="${busy}">
-   <textarea id="home-chat-text" name="message" rows="2" maxlength="240" aria-label="用一句话记账或查账" placeholder="用一句话记账，或问问你的账" required ${busy?'readonly':''}>${escape(chat.text)}</textarea>
+   <textarea id="home-chat-text" name="message" rows="2" maxlength="240" aria-label="用一句话记账或查账，仅支持账本相关" placeholder="只支持记账/查账/小票识别，例如「午饭 25」" required ${busy?'readonly':''}>${escape(chat.text)}</textarea>
    <button class="home-chat-send" type="submit" aria-label="发送" ${busy?'disabled':''}>${icon('income',22)}</button>
    <div class="home-chat-tools">
     ${thinkingIcon(busy)}
@@ -1043,12 +1081,12 @@ async function submitHomeChat(message){
  }
 }
 async function resolveHomeChat({text:clean,month}){
- if(/多少|几笔|哪[些类个项]|最多|排行|明细|查[查一下]?|统计|有没有|吗|[？?]|为什么|分析|调整|预算|限额|超支/.test(clean)){
-  return {text:'',mode:'query',question:clean,month,result:await requestAnswer(clean,month)};
- }
+ const intent=classifyChatInput(clean);
+ if(intent==='query')return {text:'',mode:'query',question:clean,month,result:await requestAnswer(clean,month)};
+ if(intent==='chat')return {text:clean,mode:'chat',question:clean,reply:chatReply(clean)};
  const drafts=[];
  for(const part of clean.split(/[，,、；;\n]+/).map(value=>value.trim()).filter(Boolean))drafts.push(await parseDraft(part));
- return drafts.length?{text:clean,mode:'draft',drafts,completed:0,savedIds:[]}:{text:clean,mode:'input'};
+ return drafts.length?{text:clean,mode:'draft',drafts,completed:0,savedIds:[]}:{text:clean,mode:'chat',question:clean,reply:chatReply(clean)};
 }
 async function saveHomeDraft(form){
  const chat=state.homeChat;
