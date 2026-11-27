@@ -61,28 +61,33 @@ const state={page:'home',month:thisMonth(),ledger:{transactions:[],budgets:[]},b
 const monthVersions=new Map();
 const loadedMonths=new Set();
 let monthRequest=0;
+const MAX_RECEIPT_BYTES=5*1024*1024;
+const receiptTypes=new Set(['image/png','image/jpeg','image/webp']);
+const isFormDataBody=body=>typeof FormData!=='undefined'&&body instanceof FormData;
 async function api(path,options={}){
  let response;
+ const headers={Accept:'application/json',...(options.headers||{})};
+ if(options.body!==undefined&&options.body!==null&&!isFormDataBody(options.body)&&!headers['Content-Type'])headers['Content-Type']='application/json';
  try{
-  response=await fetch(path,{...options,cache:'no-store',headers:{Accept:'application/json',...(options.body?{'Content-Type':'application/json'}:{})}});
+  response=await fetch(path,{...options,cache:'no-store',headers});
  }catch{
-  throw new Error('无法连接服务。若刚提交过账单，请先刷新核对，再决定是否重试。');
+  throw new Error('无法连接服务，请检查后端是否已启动；如刚提交过账单，请先刷新核对。');
  }
  const data=await response.json().catch(()=>null);
  if(!response.ok)throw new Error(typeof data?.detail==='string'?data.detail:'请求失败（HTTP '+response.status+'），请联系对应接口负责人。');
- if(data===null)throw new Error('接口没有返回有效 JSON，请核对契约 v2。');
+ if(data===null)throw new Error('接口没有返回有效 JSON，请检查后端响应。');
  return data;
 }
 function categoryFromApi(category,type){
  if(type==='income'&&category===state.meta.income)return 'other';
- if(type==='income')throw new Error('收入分类与契约 v2 不符。');
- if(!Object.hasOwn(apiCategories,category))throw new Error('接口返回了未支持的分类，请核对契约 v2。');
+ if(type==='income')throw new Error('收入分类与接口契约不符。');
+ if(!Object.hasOwn(apiCategories,category))throw new Error('接口返回了未支持的分类。');
  return apiCategories[category];
 }
 function fromApi(item){
  if(!item||!Number.isSafeInteger(item.id)||item.id<1||!validLedgerDate(item.day)
   ||!Number.isSafeInteger(item.amount)||item.amount<=0||!['expense','income'].includes(item.type)
-  ||typeof item.merchant!=='string'||typeof item.note!=='string')throw new Error('流水响应字段与契约 v2 不符。');
+  ||typeof item.merchant!=='string'||typeof item.note!=='string')throw new Error('流水响应字段与接口契约不符。');
  return {id:String(item.id),date:item.day,amount:item.amount,type:item.type,category:categoryFromApi(item.category,item.type),merchant:item.merchant,note:item.note};
 }
 function toApi(item){
@@ -99,7 +104,7 @@ async function refreshMonth(month=state.month,withBudget=true){
  const transactions=rows.items.map(fromApi);
  let budgets,stats;
  if(withBudget){
-  if(budget.month!==month||!Array.isArray(budget.items))throw new Error('预算响应字段与契约 v2 不符。');
+  if(budget.month!==month||!Array.isArray(budget.items))throw new Error('预算响应字段与接口契约不符。');
   budgets=[];stats={};
   for(const item of budget.items){
    if(item.budget===null)continue;
@@ -125,7 +130,7 @@ async function boot(){
   const meta=await api('/api/meta');
   if(!validLedgerDate(meta.today)||typeof meta.income!=='string'||!Array.isArray(meta.categories)
    ||new Set(meta.categories.map(item=>item.key)).size!==Object.keys(categories).length
-   ||meta.categories.some(item=>!Object.hasOwn(apiCategories,item.key)||item.label!==item.key))throw new Error('元信息与契约 v2 不符，请确认解析器 v2 已交付。');
+   ||meta.categories.some(item=>!Object.hasOwn(apiCategories,item.key)||item.label!==item.key))throw new Error('元信息与接口契约不符，请确认后端已更新到 V3。');
   state.meta=meta;
   for(const item of meta.categories)categories[apiCategories[item.key]].label=item.label;
   state.month=meta.today.slice(0,7);
@@ -596,16 +601,16 @@ async function requestAnswer(question,month){
  const scoped=question.replace(/所选月份/g,month.replace('-','年')+'月');
  const result=await api('/api/query',{method:'POST',body:JSON.stringify({question:scoped})});
  if(typeof result.answer!=='string'||!result.data||!validLedgerDate(result.understood?.from)||!validLedgerDate(result.understood?.to)
-  ||!['sum','count','ranking'].includes(result.understood.metric))throw new Error('查账响应字段与契约 v2 不符。');
- if(!['expense','income'].includes(result.understood.type))throw new Error('查账收支类型与契约 v2 不符。');
+  ||!['sum','count','ranking'].includes(result.understood.metric))throw new Error('查账响应字段与接口契约不符。');
+ if(!['expense','income'].includes(result.understood.type))throw new Error('查账收支类型与接口契约不符。');
  if(result.understood.metric==='ranking'){
   if(!Array.isArray(result.data.items))throw new Error('排行响应缺少 items。');
   for(const item of result.data.items){
    categoryFromApi(item.category,result.understood.type);
-   if(!Number.isSafeInteger(item.amount)||item.amount<0)throw new Error('排行金额与契约 v2 不符。');
+   if(!Number.isSafeInteger(item.amount)||item.amount<0)throw new Error('排行金额与接口契约不符。');
   }
  }else if(!Number.isSafeInteger(result.data.amount)||result.data.amount<0||!Number.isSafeInteger(result.data.count)||result.data.count<0){
-  throw new Error('查账金额或笔数与契约 v2 不符。');
+  throw new Error('查账金额或笔数与接口契约不符。');
  }
  return {...result,kind:'api'};
 }
@@ -627,7 +632,7 @@ async function ask(question){
   }
  }
 }
-let editor=null, receiptUrl='', trigger=null;
+let editor=null, receiptUrl='', receiptFile=null, trigger=null;
 const editorDefaults=(month=state.month)=>({amount:'',date:month===thisMonth()?today():month+'-01',type:'expense',category:'',merchant:'',note:''});
 function showDialog(title,markup){
  const opening=!dialog.open;
@@ -637,17 +642,14 @@ function showDialog(title,markup){
  else dialog.querySelector('[data-action="close-dialog"]').focus({preventScroll:true});
  syncRollingAmounts(dialog);
 }
-function releaseReceipt(){if(receiptUrl)URL.revokeObjectURL(receiptUrl);receiptUrl='';}
+function releaseReceipt(){if(receiptUrl)URL.revokeObjectURL(receiptUrl);receiptUrl='';receiptFile=null;}
 function openEditor(item,mode='text'){
  releaseReceipt();
- editor={origin:state.page,mode,draft:editorDefaults(),visible:mode==='manual',busy:false,saving:false,text:'',imageName:'',imageError:'',exampleImage:false,note:''};
+ editor={origin:state.page,mode,draft:editorDefaults(),visible:mode==='manual',busy:false,saving:false,text:'',imageName:'',imageError:'',note:''};
  drawEditor();
 }
 function optionsForCategories(value,firstLabel){
  return filterOptions([['',firstLabel],...Object.keys(categories).map(cat=>[cat,label(cat)])],value);
-}
-function sampleReceipt(){
- return '<div class="draft-label" style="margin-top:7px"><strong>示例小票</strong><br>校园咖啡店 · '+today()+'<br>实付 ¥18.50</div>';
 }
 function captureEditorDraft(){
  const form=document.querySelector('#record-form');
@@ -655,13 +657,22 @@ function captureEditorDraft(){
  const values=new FormData(form);
  for(const key of ['amount','date','type','category','merchant','note'])if(values.has(key))editor.draft[key]=String(values.get(key));
 }
+function syncReceiptInput(){
+ const input=document.querySelector('#receipt-file');
+ if(!input||!receiptFile||typeof DataTransfer==='undefined')return;
+ try{
+  const transfer=new DataTransfer();
+  transfer.items.add(receiptFile);
+  input.files=transfer.files;
+ }catch{}
+}
 function drawEditor(){
  const e=editor;
  const tabData=[['text','文字录入'],['image','图片录入'],['manual','手动填写']];
  const tabs=`<div class="tabs" aria-label="录入方式">${tabData.map(([value,text])=>`<button type="button" class="tab ${e.mode===value?'active':''}" data-action="entry-tab" data-mode="${value}" aria-pressed="${e.mode===value}" ${e.busy||e.saving?'disabled':''}>${text}</button>`).join('')}</div>`;
  const textInput=e.mode==='text'?`<label class="field-label">记账内容<textarea id="entry-text" placeholder="例如：今天午饭 25 元" maxlength="250" ${e.busy?'disabled':''}>${escape(e.text)}</textarea></label><div class="form-actions"><button type="button" class="plain" data-action="sample-text" ${e.busy?'disabled':''}>填入示例</button>${button('parse-text',e.busy?'识别中…':'识别文字','spark','secondary',e.busy?'disabled':'')}</div>`:'';
- const imageInput=e.mode==='image'?`<div class="upload-area"><label class="field-label">选择小票或支付截图<input id="receipt-file" type="file" accept="image/png,image/jpeg,image/webp" ${e.busy?'disabled':''}></label><p class="micro">PNG、JPEG 或 WebP，最大 8 MB。图片仅在浏览器中预览。</p>${receiptUrl?`<img class="receipt-preview" src="${escape(receiptUrl)}" alt="已选择的小票预览"><p class="micro">${escape(e.imageName)}</p>`:e.exampleImage?sampleReceipt():''}</div>
- <div class="form-actions">${button('sample-receipt','使用示例小票','image','plain',e.busy?'disabled':'')}${button('parse-image',e.busy?'识别中…':receiptUrl?'对照图片填写':'模拟识别','spark','secondary',e.busy?'disabled':'')}</div>`:'';
+ const imageInput=e.mode==='image'?`<div class="upload-area"><label class="field-label">选择小票或支付截图<input id="receipt-file" type="file" accept="image/png,image/jpeg,image/webp" ${e.busy?'disabled':''}></label><p class="micro">PNG、JPEG 或 WebP，最大 5 MB。图片会上传到本服务，并可能交由配置的识别模型处理；确认前不会写入账本。</p>${receiptUrl?`<img class="receipt-preview" src="${escape(receiptUrl)}" alt="已选择的小票预览"><p class="micro">${escape(e.imageName)}</p>`:'<p class="micro">还没有选择图片。</p>'}</div>
+ <div class="form-actions">${button('parse-image',e.busy?'识别中…':receiptFile?'识别小票':'请先选择图片','spark','secondary',e.busy||!receiptFile?'disabled':'')}</div>`:'';
  const draft=e.draft;
  const form=e.visible?`<form id="record-form">
  <div class="draft-label">${e.mode==='manual'?'<strong>账单明细</strong>':'<strong>核对账单</strong> · 确认金额、日期与分类'}</div>
@@ -675,6 +686,7 @@ function drawEditor(){
  </div><p class="form-message" id="save-error" role="alert"></p>
  <div class="form-actions"><button type="button" class="plain" data-action="close-dialog">取消</button><button type="submit" class="primary" ${e.saving?'disabled':''}>${icon('check',16)} ${e.saving?'保存中…':'确认保存'}</button></div></form>`:'';
  showDialog('记一笔',tabs+textInput+imageInput+`<p class="form-message" role="status">${escape(e.note||e.imageError)}</p>`+form);
+ if(e.mode==='image')syncReceiptInput();
 }
 function switchEntry(mode){
  captureEditorDraft();
@@ -683,15 +695,26 @@ function switchEntry(mode){
  if(mode==='manual')editor.visible=true;
  drawEditor();
 }
-async function parseDraft(text){
- const item=await api('/api/parse',{method:'POST',body:JSON.stringify({text})});
+function parseShapeToDraft(item,source){
  const fields={day:'日期',amount:'金额',type:'收支类型',category:'分类',merchant:'商户'};
- if(!validLedgerDate(item.day)||!(item.amount===null||(Number.isSafeInteger(item.amount)&&item.amount>0))
+ if(!item||typeof item!=='object'||Array.isArray(item)
+  ||!validLedgerDate(item.day)||!(item.amount===null||(Number.isSafeInteger(item.amount)&&item.amount>0))
   ||!['expense','income'].includes(item.type)||typeof item.merchant!=='string'||typeof item.note!=='string'
-  ||Object.keys(fields).some(key=>typeof item.understood?.[key]!=='boolean'))throw new Error('文字解析响应与契约 v2 不符，请确认解析器 v2 已交付。');
+  ||!item.understood||typeof item.understood!=='object'||Array.isArray(item.understood)
+  ||Object.keys(fields).some(key=>typeof item.understood[key]!=='boolean'))throw new Error(source+'响应与 V3 接口契约不符。');
  return {date:item.day,amount:item.amount===null?'':(item.amount/100).toFixed(2),type:item.type,
   category:categoryFromApi(item.category,item.type),merchant:item.merchant,note:item.note,
   checks:Object.keys(fields).filter(key=>!item.understood[key]).map(key=>fields[key])};
+}
+async function parseDraft(text){
+ const item=await api('/api/parse',{method:'POST',body:JSON.stringify({text})});
+ return parseShapeToDraft(item,'文字解析');
+}
+async function receiptDraft(file){
+ const body=new FormData();
+ body.append('file',file,file.name||'receipt');
+ const item=await api('/api/receipt',{method:'POST',body});
+ return parseShapeToDraft(item,'小票识别');
 }
 async function parseEditor(mode){
  const e=editor;
@@ -699,20 +722,14 @@ async function parseEditor(mode){
  if(mode==='text'){
   e.text=document.querySelector('#entry-text').value.trim();
   if(!e.text){e.note='请先输入一段记账内容。';drawEditor();return;}
- }else if(!receiptUrl&&!e.exampleImage){e.note=e.imageError||'请先选择图片或使用示例小票。';drawEditor();return;}
- captureEditorDraft();e.busy=true;e.note='';drawEditor();
+ }else if(!receiptFile){e.note=e.imageError||'请先选择 PNG、JPEG 或 WebP 小票图片。';drawEditor();return;}
+ const file=receiptFile;
+ captureEditorDraft();e.busy=true;e.note=mode==='text'?'正在解析文字，请稍候…':'正在上传并识别小票，请稍候…';drawEditor();
  try{
-  if(mode==='text'){
-   const draft=await parseDraft(e.text);
-   if(editor!==e||!dialog.open)return;
-   e.draft=draft;
-   e.note=(draft.amount?'已生成草稿。':'没认出金额，请手动补。')+(draft.checks.length?'请核对：'+draft.checks.join('、')+'。':'');
-  }else if(e.exampleImage){
-   e.draft={...editorDefaults(),date:today(),amount:'18.50',category:'food',merchant:'校园咖啡店',note:'示例小票'};
-   e.note='示例预填完成，请核对后保存。';
-  }else{
-   e.draft=editorDefaults();e.note='图片在本地预览，请对照填写账单。';
-  }
+  const draft=mode==='text'?await parseDraft(e.text):await receiptDraft(file);
+  if(editor!==e||!dialog.open)return;
+  e.draft=draft;
+  e.note=(mode==='image'?'小票识别完成。':'草稿已生成。')+(draft.amount?'':'没认出金额，请手动补。')+(draft.checks.length?'请核对：'+draft.checks.join('、')+'。':'');
   e.visible=true;
  }catch(error){e.note=error.message;}
  finally{e.busy=false;if(editor===e&&dialog.open)drawEditor();}
@@ -720,12 +737,18 @@ async function parseEditor(mode){
 function setReceipt(file){
  if(!editor)return;
  captureEditorDraft();releaseReceipt();
- editor.exampleImage=false;editor.imageName='';editor.note='';editor.imageError='';
+ editor.imageName='';editor.note='';editor.imageError='';
  if(!file)return drawEditor();
- if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>8*1024*1024){
-  editor.imageError='图片格式或大小不符合要求，请换一张图。';drawEditor();return;
+ if(!receiptTypes.has(file.type)){
+  editor.imageError='只支持 PNG、JPEG 或 WebP 图片。';drawEditor();return;
  }
- receiptUrl=URL.createObjectURL(file);editor.imageName=file.name;drawEditor();
+ if(!file.size){
+  editor.imageError='图片内容为空，请重新选择。';drawEditor();return;
+ }
+ if(file.size>MAX_RECEIPT_BYTES){
+  editor.imageError='图片不能超过 5 MB，请换一张图。';drawEditor();return;
+ }
+ receiptFile=file;receiptUrl=URL.createObjectURL(file);editor.imageName=file.name;drawEditor();
 }
 async function recordSubmit(form){
  if(!editor||editor.saving)return;
@@ -833,7 +856,6 @@ const actions={
  delete:el=>deleteRecord(el.dataset.id),
  'entry-tab':el=>switchEntry(el.dataset.mode),
  'sample-text':()=>{editor.text='今天午饭 25 元';document.querySelector('#entry-text').value=editor.text;document.querySelector('#entry-text').focus();},
- 'sample-receipt':()=>{captureEditorDraft();releaseReceipt();editor.exampleImage=true;editor.imageError='';editor.note='';drawEditor();},
  'parse-text':()=>parseEditor('text'),
  'parse-image':()=>parseEditor('image'),
  ask:el=>state.page==='home'?submitHomeChat(el.dataset.question):ask(el.dataset.question)
