@@ -684,7 +684,7 @@ function drawEditor(){
  <label class="field-label">商户<input name="merchant" maxlength="70" placeholder="选填" value="${escape(draft.merchant)}"></label>
  <label class="field-label">备注<input name="note" maxlength="120" placeholder="选填" value="${escape(draft.note)}"></label>
  </div><p class="form-message" id="save-error" role="alert"></p>
- <div class="form-actions"><button type="button" class="plain" data-action="close-dialog">取消</button><button type="submit" class="primary" ${e.saving?'disabled':''}>${icon('check',16)} ${e.saving?'保存中…':'确认保存'}</button></div></form>`:'';
+  <div class="form-actions"><button type="button" class="plain" data-action="close-dialog">取消</button><button type="submit" class="primary" ${e.busy||e.saving?'disabled':''}>${icon('check',16)} ${e.saving?'保存中…':'确认保存'}</button></div></form>`:'';
  showDialog('记一笔',tabs+textInput+imageInput+`<p class="form-message" role="status">${escape(e.note||e.imageError)}</p>`+form);
  if(e.mode==='image')syncReceiptInput();
 }
@@ -737,7 +737,7 @@ async function parseEditor(mode){
 function setReceipt(file){
  if(!editor)return;
  captureEditorDraft();releaseReceipt();
- editor.imageName='';editor.note='';editor.imageError='';
+ editor.imageName='';editor.note='';editor.imageError='';editor.visible=false;editor.draft=editorDefaults();
  if(!file)return drawEditor();
  if(!receiptTypes.has(file.type)){
   editor.imageError='只支持 PNG、JPEG 或 WebP 图片。';drawEditor();return;
@@ -751,7 +751,7 @@ function setReceipt(file){
  receiptFile=file;receiptUrl=URL.createObjectURL(file);editor.imageName=file.name;drawEditor();
 }
 async function recordSubmit(form){
- if(!editor||editor.saving)return;
+ if(!editor||editor.busy||editor.saving)return;
  captureEditorDraft();
  const e=editor,d=e.draft;
  const item={amount:Math.round(Number(d.amount)*100),date:d.date,category:d.category,type:d.type,merchant:d.merchant.trim(),note:d.note.trim()};
